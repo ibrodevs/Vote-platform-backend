@@ -15,3 +15,22 @@ class University(TimeStampedUUIDModel):
 
     def __str__(self):
         return f"{self.name} ({self.code})"
+
+class Faculty(TimeStampedUUIDModel):
+    university = models.ForeignKey(
+        University,
+        on_delete=models.CASCADE,
+        related_name='faculties',
+        verbose_name="Университет"
+    )
+    name = models.CharField(max_length=255, verbose_name="Название факультета (RU)")
+    name_ky = models.CharField(max_length=255, blank=True, default='', verbose_name="Аталышы (KY)")
+    code = models.CharField(max_length=50, blank=True, default='', verbose_name="Код/аббревиатура")
+
+    class Meta:
+        verbose_name = "Факультет"
+        verbose_name_plural = "Факультеты"
+        ordering = ['name']
+
+    def __str__(self):
+        return f"{self.name} ({self.university.name})"

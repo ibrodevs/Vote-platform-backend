@@ -29,6 +29,23 @@ class CandidateSerializer(serializers.ModelSerializer):
             validated_data['university'] = validated_data['election'].university
         return super().create(validated_data)
 
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        request = self.context.get('request')
+        if instance.photo:
+            try:
+                url = instance.photo.url
+                if request is not None:
+                    ret['photo'] = request.build_absolute_uri(url)
+                else:
+                    backend_url = os.getenv('BACKEND_URL', '').rstrip('/')
+                    ret['photo'] = f"{backend_url}{url}" if backend_url else url
+            except Exception:
+                ret['photo'] = instance.photo_url or None
+        elif instance.photo_url:
+            ret['photo'] = instance.photo_url
+        return ret
+
 class CandidatePublicSerializer(serializers.ModelSerializer):
     class Meta:
         model = Candidate
@@ -36,6 +53,23 @@ class CandidatePublicSerializer(serializers.ModelSerializer):
             'id', 'full_name', 'photo', 'photo_url', 'faculty', 'course',
             'position', 'short_bio', 'program', 'order'
         ]
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        request = self.context.get('request')
+        if instance.photo:
+            try:
+                url = instance.photo.url
+                if request is not None:
+                    ret['photo'] = request.build_absolute_uri(url)
+                else:
+                    backend_url = os.getenv('BACKEND_URL', '').rstrip('/')
+                    ret['photo'] = f"{backend_url}{url}" if backend_url else url
+            except Exception:
+                ret['photo'] = instance.photo_url or None
+        elif instance.photo_url:
+            ret['photo'] = instance.photo_url
+        return ret
 
 class CandidateReorderSerializer(serializers.Serializer):
     ordered_ids = serializers.ListField(

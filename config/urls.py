@@ -1,9 +1,36 @@
 from django.contrib import admin
-from django.urls import path, include
+from django.urls import path, include, re_path
 from django.conf import settings
 from django.conf.urls.static import static
+from django.views.static import serve
+from django.http import JsonResponse
+
+def api_root(request):
+    return JsonResponse({
+        'status': 'online',
+        'message': 'Voting Platform API is operational and accepting requests from all origins.',
+        'version': '1.0.0',
+        'endpoints': {
+            'health': '/api/health/',
+            'public_universities': '/api/v1/universities/',
+            'student_register': '/api/v1/students/auth/register/',
+            'student_login': '/api/v1/students/auth/login/',
+            'student_profile': '/api/v1/students/auth/me/',
+            'admin_login': '/api/v1/auth/login/',
+            'django_admin': '/admin-django/',
+        }
+    })
+
+def health_check(request):
+    return JsonResponse({'status': 'healthy', 'service': 'voting-backend'})
 
 urlpatterns = [
+    # Public root & healthcheck
+    path('', api_root, name='api-root'),
+    path('api/', api_root, name='api-index'),
+    path('api/health/', health_check, name='health-check'),
+
+    # Django Admin
     path('admin-django/', admin.site.urls),
 
     # Version 1 API
@@ -18,8 +45,9 @@ urlpatterns = [
     path('api/v1/admin/candidates/', include('apps.candidates.urls_admin')),
     path('api/v1/elections/', include('apps.elections.urls_student')),
     path('api/v1/voting/', include('apps.voting.urls')),
+
+    # Media and static fallback serving (guarantees candidate photos and static assets always serve on PythonAnywhere)
+    re_path(r'^media/(?P<path>.*)$', serve, {'document_root': settings.MEDIA_ROOT}),
+    re_path(r'^static/(?P<path>.*)$', serve, {'document_root': settings.STATIC_ROOT}),
 ]
 
-if settings.DEBUG:
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
-    urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)

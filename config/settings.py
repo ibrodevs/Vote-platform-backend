@@ -1,12 +1,17 @@
 import os
 from pathlib import Path
 from datetime import timedelta
+from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Load environment variables from .env if present
+load_dotenv(BASE_DIR / '.env')
 
 SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'vote-platform-secret-key-34e8bb-midnight-011c42')
 DEBUG = os.getenv('DJANGO_DEBUG', 'True').lower() == 'true'
 
+# Open to all hostnames by default for PythonAnywhere & multi-domain deployment
 ALLOWED_HOSTS = ['*']
 
 INSTALLED_APPS = [
@@ -37,6 +42,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -66,7 +72,7 @@ TEMPLATES = [
 WSGI_APPLICATION = 'config.wsgi.application'
 ASGI_APPLICATION = 'config.asgi.application'
 
-# Database configuration: PostgreSQL with fallback to SQLite for local development
+# Database configuration: SQLite (default zero-config), MySQL (PythonAnywhere), or PostgreSQL
 DB_ENGINE = os.getenv('DB_ENGINE', 'sqlite')
 if DB_ENGINE == 'postgresql':
     DATABASES = {
@@ -79,12 +85,23 @@ if DB_ENGINE == 'postgresql':
             'PORT': os.getenv('DB_PORT', '5432'),
         }
     }
+elif DB_ENGINE == 'mysql':
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.mysql',
+            'NAME': os.getenv('DB_NAME', 'vote_db'),
+            'USER': os.getenv('DB_USER', 'root'),
+            'PASSWORD': os.getenv('DB_PASSWORD', ''),
+            'HOST': os.getenv('DB_HOST', '127.0.0.1'),
+            'PORT': os.getenv('DB_PORT', '3306'),
+        }
+    }
 else:
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
             'NAME': BASE_DIR / 'db.sqlite3',
-            'TIMEOUT': 20,
+            'TIMEOUT': 30,
         }
     }
 
@@ -104,11 +121,17 @@ USE_TZ = True
 
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# Reverse Proxy & SSL (Crucial for PythonAnywhere HTTPS and proper request.build_absolute_uri generation)
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+USE_X_FORWARDED_HOST = True
+USE_X_FORWARDED_PORT = True
 
 # REST Framework
 REST_FRAMEWORK = {
@@ -137,13 +160,23 @@ SIMPLE_JWT = {
     'AUTH_HEADER_TYPES': ('Bearer',),
 }
 
-# CORS
+# CORS - Open to all clients (Web, Mobile, Postman, Vercel, PythonAnywhere, Localhost)
 CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
-CORS_ALLOW_HEADERS = [
-    'accept',
+CORS_ALLOW_PRIVATE_NETWORK = True
+CORS_ALLOW_METHODS = [
+    'DELETE',
+    'GET',
+    'OPTIONS',
+    'PATCH',
+    'POST',
+    'PUT',
+]
+from corsheaders.defaults import default_headers
+CORS_ALLOW_HEADERS = list(default_headers) + [
     'accept-encoding',
     'authorization',
+    'cache-control',
     'content-type',
     'dnt',
     'origin',
@@ -151,6 +184,30 @@ CORS_ALLOW_HEADERS = [
     'x-csrftoken',
     'x-requested-with',
 ]
+CORS_EXPOSE_HEADERS = [
+    'content-type',
+    'x-csrftoken',
+]
+
+# CSRF - Trusted origins allowing cross-domain POST/PUT/DELETE
+CSRF_TRUSTED_ORIGINS = [
+    'https://*.pythonanywhere.com',
+    'http://*.pythonanywhere.com',
+    'https://*.vercel.app',
+    'https://*.netlify.app',
+    'https://*.ngrok-free.app',
+    'https://*.loca.lt',
+    'http://localhost:3000',
+    'https://localhost:3000',
+    'http://127.0.0.1:3000',
+    'http://localhost:8000',
+    'http://127.0.0.1:8000',
+]
+extra_csrf = os.getenv('DJANGO_CSRF_TRUSTED_ORIGINS', '')
+if extra_csrf:
+    CSRF_TRUSTED_ORIGINS.extend([origin.strip() for origin in extra_csrf.split(',') if origin.strip()])
+
+X_FRAME_OPTIONS = 'ALLOWALL'
 
 # Celery & Redis
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://127.0.0.1:6379/0')
@@ -159,7 +216,7 @@ CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
-# Always eager fallback in case redis is not available in dev
+# Always eager fallback in case redis is not available in dev or PythonAnywhere free tier
 CELERY_TASK_ALWAYS_EAGER = os.getenv('CELERY_TASK_ALWAYS_EAGER', 'True').lower() == 'true'
 CELERY_TASK_EAGER_PROPAGATES = True
 
@@ -168,3 +225,4 @@ MOCK_SMS = os.getenv('MOCK_SMS', 'True').lower() == 'true'
 SMS_OTP_EXPIRY_MINUTES = 10
 SMS_MAX_ATTEMPTS = 5
 DEMO_OTP_CODE = '123456'
+

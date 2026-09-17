@@ -91,3 +91,34 @@ class UniversityPublicDetailByCodeView(APIView):
                 {"error": {"code": "not_found", "message": "Университет не найден"}},
                 status=status.HTTP_404_NOT_FOUND
             )
+
+class UniversityFacultyListCreateView(generics.ListCreateAPIView):
+    from .serializers import FacultySerializer
+    from .models import Faculty
+    serializer_class = FacultySerializer
+
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [permissions.AllowAny()]
+        return [IsAdminUserWithRole()]
+
+    def get_queryset(self):
+        from .models import Faculty
+        uni_id = self.kwargs.get('university_id')
+        return Faculty.objects.filter(university_id=uni_id).order_by('name')
+
+    def perform_create(self, serializer):
+        uni_id = self.kwargs.get('university_id')
+        university = University.objects.get(id=uni_id)
+        serializer.save(university=university)
+
+class UniversityFacultyDetailView(generics.RetrieveUpdateDestroyAPIView):
+    from .serializers import FacultySerializer
+    from .models import Faculty
+    permission_classes = [IsAdminUserWithRole]
+    serializer_class = FacultySerializer
+
+    def get_queryset(self):
+        from .models import Faculty
+        uni_id = self.kwargs.get('university_id')
+        return Faculty.objects.filter(university_id=uni_id)

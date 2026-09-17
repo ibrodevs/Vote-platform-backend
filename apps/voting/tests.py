@@ -107,8 +107,6 @@ class SecretBallotVotingServiceTest(TransactionTestCase):
         errors = []
 
         def attempt_vote():
-            from django.db import connection
-            connection.close()  # New DB connection per thread
             try:
                 res = cast_secret_ballot(student2, str(self.election.id), str(self.candidate1.id))
                 results.append(res)

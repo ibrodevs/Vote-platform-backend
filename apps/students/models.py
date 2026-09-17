@@ -57,6 +57,7 @@ class Student(TimeStampedUUIDModel):
         verbose_name="Номер/код студента"
     )
     full_name = models.CharField(max_length=255, verbose_name="ФИО студента")
+    photo = models.ImageField(upload_to='students/photos/', null=True, blank=True, verbose_name="Фотография")
     phone_number = models.CharField(max_length=50, blank=True, default='', verbose_name="Номер телефона")
     email = models.EmailField(null=True, blank=True, verbose_name="Email")
     password = models.CharField(max_length=255, blank=True, default='', verbose_name="Хэш пароля")

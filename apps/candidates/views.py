@@ -1,6 +1,7 @@
 from rest_framework import generics, status, permissions
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from .models import Candidate
 from .serializers import CandidateSerializer, CandidatePublicSerializer, CandidateReorderSerializer
 from apps.elections.models import Election
@@ -16,6 +17,7 @@ def get_client_ip(request):
 class AdminElectionCandidatesListView(generics.ListCreateAPIView):
     permission_classes = [IsAdminUserWithRole]
     serializer_class = CandidateSerializer
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
     pagination_class = None
 
     def get_queryset(self):
@@ -42,6 +44,7 @@ class AdminElectionCandidatesListView(generics.ListCreateAPIView):
 class AdminCandidateDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAdminUserWithRole]
     serializer_class = CandidateSerializer
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
     queryset = Candidate.objects.all()
 
     def perform_update(self, serializer):

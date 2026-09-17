@@ -9,10 +9,27 @@ class StudentSerializer(serializers.ModelSerializer):
         model = Student
         fields = [
             'id', 'university', 'university_name', 'university_code',
-            'student_id', 'full_name', 'phone_number', 'email',
+            'student_id', 'full_name', 'phone_number', 'email', 'photo',
             'faculty', 'group', 'course', 'is_active', 'created_at'
         ]
         read_only_fields = ['id', 'created_at']
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        request = self.context.get('request')
+        if instance.photo:
+            try:
+                url = instance.photo.url
+                if request is not None:
+                    ret['photo'] = request.build_absolute_uri(url)
+                else:
+                    backend_url = os.getenv('BACKEND_URL', '').rstrip('/')
+                    ret['photo'] = f"{backend_url}{url}" if backend_url else url
+            except Exception:
+                ret['photo'] = None
+        else:
+            ret['photo'] = None
+        return ret
 
 class UploadBatchSerializer(serializers.ModelSerializer):
     university_name = serializers.CharField(source='university.name', read_only=True)
@@ -39,6 +56,7 @@ class StudentVerifySerializer(serializers.Serializer):
 class StudentRegisterSerializer(serializers.Serializer):
     full_name = serializers.CharField(max_length=255)
     university_id = serializers.UUIDField()
+    faculty = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
     course = serializers.IntegerField(min_value=1, max_value=6)
     group = serializers.CharField(max_length=100)
     email = serializers.EmailField()

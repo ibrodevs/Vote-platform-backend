@@ -7,7 +7,7 @@ from django.http import HttpResponse
 from rest_framework import generics, permissions, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
 
@@ -172,6 +172,7 @@ class StudentRegisterView(APIView):
         student = Student.objects.create(
             university=university,
             full_name=data['full_name'].strip(),
+            faculty=data.get('faculty', '').strip(),
             course=data['course'],
             group=data['group'].strip(),
             email=email,
@@ -188,6 +189,7 @@ class StudentRegisterView(APIView):
                 "student_id": student.student_id,
                 "full_name": student.full_name,
                 "email": student.email,
+                "photo": None,
                 "group": student.group,
                 "faculty": student.faculty,
                 "course": student.course,
@@ -226,6 +228,13 @@ class StudentPasswordLoginView(APIView):
 
         token = create_student_token(student)
 
+        photo_url = None
+        if student.photo:
+            try:
+                photo_url = request.build_absolute_uri(student.photo.url)
+            except Exception:
+                photo_url = None
+
         return Response({
             "student_token": token,
             "student": {
@@ -233,6 +242,7 @@ class StudentPasswordLoginView(APIView):
                 "student_id": student.student_id,
                 "full_name": student.full_name,
                 "email": student.email,
+                "photo": photo_url,
                 "group": student.group,
                 "faculty": student.faculty,
                 "course": student.course,
@@ -247,15 +257,24 @@ class StudentPasswordLoginView(APIView):
 
 class StudentProfileView(APIView):
     permission_classes = [IsStudentAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
 
     def get(self, request):
         student = request.user.student
+        photo_url = None
+        if student.photo:
+            try:
+                photo_url = request.build_absolute_uri(student.photo.url)
+            except Exception:
+                photo_url = None
+
         return Response({
             "student": {
                 "id": str(student.id),
                 "student_id": student.student_id,
                 "full_name": student.full_name,
                 "email": student.email,
+                "photo": photo_url,
                 "group": student.group,
                 "faculty": student.faculty,
                 "course": student.course,
@@ -268,6 +287,16 @@ class StudentProfileView(APIView):
             }
         }, status=status.HTTP_200_OK)
 
+    def patch(self, request):
+        student = request.user.student
+        if 'photo' in request.FILES:
+            student.photo = request.FILES['photo']
+            student.save(update_fields=['photo'])
+        if 'full_name' in request.data:
+            student.full_name = request.data['full_name'].strip()
+            student.save(update_fields=['full_name'])
+        return self.get(request)
+
 # --- Admin Student Management Endpoints ---
 
 class AdminUniversityStudentsListView(generics.ListCreateAPIView):
@@ -277,16 +306,27 @@ class AdminUniversityStudentsListView(generics.ListCreateAPIView):
     filterset_fields = ['faculty', 'course', 'is_active']
     search_fields = ['student_id', 'full_name', 'phone_number', 'email', 'faculty']
     ordering_fields = ['full_name', 'student_id', 'course', 'created_at']
-    ordering = ['full_name']
+    ordering = ['-created_at']
 
     def get_queryset(self):
-        uni_id = self.kwargs.get('university_id')
+        uni_id = self.kwargs.get('university_id') or self.request.query_params.get('university_id') or self.request.query_params.get('university')
         user = self.request.user
         if getattr(user, 'role', None) != 'super_admin' and not user.is_superuser:
-            # Check university matches
-            if str(user.university_id) != str(uni_id):
+            if user.university_id:
+                qs = Student.objects.filter(university_id=user.university_id)
+            else:
                 return Student.objects.none()
-        return Student.objects.filter(university_id=uni_id)
+        else:
+            if uni_id:
+                qs = Student.objects.filter(university_id=uni_id)
+            else:
+                qs = Student.objects.all()
+
+        only_registered = self.request.query_params.get('only_registered')
+        if only_registered and only_registered.lower() in ['true', '1', 'yes']:
+            qs = qs.exclude(password='').exclude(password__isnull=True)
+
+        return qs
 
     def perform_create(self, serializer):
         uni_id = self.kwargs.get('university_id')
@@ -304,6 +344,7 @@ class AdminUniversityStudentsListView(generics.ListCreateAPIView):
 class AdminStudentDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAdminUserWithRole]
     serializer_class = StudentSerializer
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
     queryset = Student.objects.all()
 
 class AdminStudentUploadView(APIView):
