@@ -46,6 +46,9 @@ urlpatterns = [
     path('api/v1/candidates/', include('apps.candidates.urls_public')),
     path('api/v1/elections/', include('apps.elections.urls_student')),
     path('api/v1/voting/', include('apps.voting.urls')),
+    path('api/v1/news/', include('apps.content.urls_public')),
+    path('api/v1/faqs/', include('apps.content.urls_faqs_public')),
+    path('api/v1/admin/content/', include('apps.content.urls_admin')),
 
     # Media and static fallback serving (guarantees candidate photos and static assets always serve on PythonAnywhere)
     re_path(r'^media/(?P<path>.*)$', serve, {'document_root': settings.MEDIA_ROOT}),

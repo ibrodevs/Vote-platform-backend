@@ -34,6 +34,25 @@ class Election(TimeStampedUUIDModel):
         default=False,
         verbose_name="Результаты видны администратору до завершения"
     )
+    is_featured = models.BooleanField(
+        default=False,
+        verbose_name="Показывать в блоке «Последние выборы»"
+    )
+    featured_order = models.PositiveIntegerField(
+        default=0,
+        verbose_name="Порядок в блоке «Последние выборы»"
+    )
+    cover_image = models.ImageField(
+        upload_to="elections/covers/",
+        null=True,
+        blank=True,
+        verbose_name="Обложка для карточки"
+    )
+    cover_image_url = models.URLField(
+        blank=True,
+        default="",
+        verbose_name="URL обложки карточки"
+    )
     created_by = models.ForeignKey(
         AdminUser,
         on_delete=models.SET_NULL,

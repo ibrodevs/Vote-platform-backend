@@ -8,11 +8,14 @@ from .views import (
     AdminElectionTurnoutView,
     AdminElectionResultsView,
     AdminElectionResultsExportView,
+    AdminFeaturedElectionsManageView,
 )
 from apps.candidates.views import AdminElectionCandidatesListView, AdminCandidateReorderView
 
 urlpatterns = [
     path('', AdminElectionListCreateView.as_view(), name='admin_elections_list_create'),
+    path('featured/', AdminFeaturedElectionsManageView.as_view(), name='admin_featured_elections'),
+    path('<uuid:pk>/featured/', AdminFeaturedElectionsManageView.as_view(), name='admin_featured_election_detail'),
     path('<uuid:pk>/', AdminElectionDetailView.as_view(), name='admin_election_detail'),
     path('<uuid:pk>/start/', AdminElectionStartView.as_view(), name='admin_election_start'),
     path('<uuid:pk>/finish/', AdminElectionFinishView.as_view(), name='admin_election_finish'),

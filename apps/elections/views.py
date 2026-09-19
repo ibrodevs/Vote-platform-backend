@@ -7,6 +7,7 @@ from django.http import HttpResponse
 from rest_framework import generics, status, permissions
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
 
@@ -18,7 +19,7 @@ from .serializers import (
 from apps.candidates.models import Candidate
 from apps.students.models import Student
 from apps.voting.models import VoteRecord, Ballot
-from apps.core.permissions import IsAdminUserWithRole, IsStudentAuthenticated, IsNotObserver
+from apps.core.permissions import IsAdminUserWithRole, IsStudentAuthenticated, IsNotObserver, IsSuperAdmin
 from apps.accounts.models import AdminActionLog
 
 def get_client_ip(request):
@@ -32,10 +33,11 @@ def get_client_ip(request):
 class AdminElectionListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAdminUserWithRole]
     serializer_class = ElectionSerializer
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
-    filterset_fields = ['status', 'university']
+    filterset_fields = ['status', 'university', 'is_featured']
     search_fields = ['title', 'title_ky', 'description']
-    ordering_fields = ['starts_at', 'created_at', 'title']
+    ordering_fields = ['starts_at', 'created_at', 'title', 'featured_order']
     ordering = ['-created_at']
 
     def get_queryset(self):
@@ -63,6 +65,7 @@ class AdminElectionListCreateView(generics.ListCreateAPIView):
 class AdminElectionDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAdminUserWithRole]
     serializer_class = ElectionSerializer
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_queryset(self):
         user = self.request.user
@@ -436,8 +439,73 @@ class PublicRecentElectionsView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
-        elections = Election.objects.select_related('university').prefetch_related('candidates').exclude(
-            status=Election.Status.CANCELLED
-        ).order_by('-created_at')[:6]
+        featured = list(Election.objects.select_related('university').prefetch_related('candidates').filter(
+            is_featured=True
+        ).exclude(status=Election.Status.CANCELLED).order_by('featured_order', '-created_at')[:6])
+
+        if len(featured) >= 3:
+            elections = featured
+        else:
+            featured_ids = [e.id for e in featured]
+            remaining_limit = 6 - len(featured)
+            remaining = list(Election.objects.select_related('university').prefetch_related('candidates').exclude(
+                id__in=featured_ids
+            ).exclude(status=Election.Status.CANCELLED).order_by('-created_at')[:remaining_limit])
+            elections = featured + remaining
+
         serializer = ElectionSerializer(elections, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+class AdminFeaturedElectionsManageView(APIView):
+    permission_classes = [IsSuperAdmin]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get(self, request):
+        """List all elections with featured info for superadmin management."""
+        elections = Election.objects.select_related('university').prefetch_related('candidates').exclude(
+            status=Election.Status.CANCELLED
+        ).order_by('-is_featured', 'featured_order', '-created_at')
+        serializer = ElectionSerializer(elections, many=True, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def patch(self, request, pk=None):
+        """Toggle or update featured status of an election."""
+        election_id = pk or request.data.get('id')
+        if not election_id:
+            return Response({"error": {"code": "missing_id", "message": "ID выборов обязателен"}}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            election = Election.objects.get(id=election_id)
+        except Election.DoesNotExist:
+            return Response({"error": {"code": "not_found", "message": "Выборы не найдены"}}, status=status.HTTP_404_NOT_FOUND)
+
+        if 'is_featured' in request.data:
+            val = request.data.get('is_featured')
+            election.is_featured = str(val).lower() in ['true', '1', 'yes'] if isinstance(val, str) else bool(val)
+
+        if 'featured_order' in request.data:
+            try:
+                election.featured_order = int(request.data.get('featured_order'))
+            except (ValueError, TypeError):
+                pass
+
+        if 'cover_image' in request.FILES:
+            election.cover_image = request.FILES['cover_image']
+
+        if 'cover_image_url' in request.data:
+            election.cover_image_url = request.data.get('cover_image_url', '')
+
+        election.save()
+
+        AdminActionLog.objects.create(
+            admin=request.user,
+            action="update_featured_election",
+            target_type="election",
+            target_id=str(election.id),
+            details={"title": election.title, "is_featured": election.is_featured, "order": election.featured_order},
+            ip_address=get_client_ip(request)
+        )
+
+        serializer = ElectionSerializer(election, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
