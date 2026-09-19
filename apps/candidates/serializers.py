@@ -11,7 +11,8 @@ class CandidateSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'election', 'election_title', 'university', 'university_name',
             'full_name', 'photo', 'photo_url', 'faculty', 'course',
-            'position', 'short_bio', 'program', 'order', 'created_at'
+            'position', 'position_ky', 'short_bio', 'short_bio_ky',
+            'program', 'program_ky', 'order', 'created_at'
         ]
         read_only_fields = ['id', 'created_at', 'university']
         extra_kwargs = {
@@ -19,10 +20,13 @@ class CandidateSerializer(serializers.ModelSerializer):
             'faculty': {'required': False, 'allow_blank': True},
             'course': {'required': False},
             'position': {'required': False, 'allow_blank': True},
+            'position_ky': {'required': False, 'allow_blank': True},
             'photo': {'required': False},
             'photo_url': {'required': False, 'allow_blank': True},
             'short_bio': {'required': False, 'allow_blank': True},
+            'short_bio_ky': {'required': False, 'allow_blank': True},
             'program': {'required': False, 'allow_blank': True},
+            'program_ky': {'required': False, 'allow_blank': True},
         }
 
     def validate_short_bio(self, value):
@@ -30,9 +34,19 @@ class CandidateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Краткая биография не должна превышать 100 символов.")
         return value
 
+    def validate_short_bio_ky(self, value):
+        if value and len(value.strip()) > 100:
+            raise serializers.ValidationError("Кыскача өмүр баяны 100 белгиден ашпоого тийиш.")
+        return value
+
     def validate_program(self, value):
         if value and len(value.strip()) > 100:
             raise serializers.ValidationError("Предвыборная программа не должна превышать 100 символов.")
+        return value
+
+    def validate_program_ky(self, value):
+        if value and len(value.strip()) > 100:
+            raise serializers.ValidationError("Шайлоо алдындагы программасы 100 белгиден ашпоого тийиш.")
         return value
 
     def create(self, validated_data):
@@ -66,7 +80,8 @@ class CandidatePublicSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'election', 'election_title', 'university', 'university_name',
             'full_name', 'photo', 'photo_url', 'faculty', 'course',
-            'position', 'short_bio', 'program', 'order'
+            'position', 'position_ky', 'short_bio', 'short_bio_ky',
+            'program', 'program_ky', 'order'
         ]
 
     def to_representation(self, instance):

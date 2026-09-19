@@ -61,3 +61,21 @@ class FAQItem(TimeStampedUUIDModel):
 
     def __str__(self):
         return self.question
+
+class StaticPage(TimeStampedUUIDModel):
+    slug = models.SlugField(max_length=100, unique=True, verbose_name="Идентификатор (slug)")
+    title = models.CharField(max_length=255, verbose_name="Заголовок (RU)")
+    title_ky = models.CharField(max_length=255, blank=True, default="", verbose_name="Заголовок (KY)")
+    content = models.TextField(verbose_name="Полный текст (RU)")
+    content_ky = models.TextField(blank=True, default="", verbose_name="Полный текст (KY)")
+    is_published = models.BooleanField(default=True, verbose_name="Опубликовано")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="Дата обновления")
+
+    class Meta:
+        verbose_name = "Информационная страница"
+        verbose_name_plural = "Информационные страницы"
+        ordering = ['slug']
+
+    def __str__(self):
+        return f"{self.title} ({self.slug})"
+

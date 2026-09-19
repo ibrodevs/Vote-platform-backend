@@ -6,8 +6,8 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
 from django.db.models import F
 
-from .models import NewsArticle, FAQItem
-from .serializers import NewsArticleSerializer, FAQItemSerializer
+from .models import NewsArticle, FAQItem, StaticPage
+from .serializers import NewsArticleSerializer, FAQItemSerializer, StaticPageSerializer
 from apps.core.permissions import IsSuperAdmin, IsAdminUserWithRole
 from apps.accounts.models import AdminActionLog
 
@@ -193,3 +193,37 @@ class PublicFAQListView(generics.ListAPIView):
 
     def get_queryset(self):
         return FAQItem.objects.filter(is_active=True).order_by('order', 'created_at')
+
+# --- Admin Static Pages (Super Admin Only) ---
+
+class AdminStaticPageListView(generics.ListAPIView):
+    permission_classes = [IsSuperAdmin]
+    serializer_class = StaticPageSerializer
+    queryset = StaticPage.objects.all().order_by('slug')
+    pagination_class = None
+
+class AdminStaticPageDetailView(generics.RetrieveUpdateAPIView):
+    permission_classes = [IsSuperAdmin]
+    serializer_class = StaticPageSerializer
+    queryset = StaticPage.objects.all()
+    lookup_field = 'slug'
+
+    def perform_update(self, serializer):
+        page = serializer.save()
+        AdminActionLog.objects.create(
+            admin=self.request.user,
+            action="update_static_page",
+            target_type="static_page",
+            target_id=str(page.slug),
+            details={"slug": page.slug, "title": page.title},
+            ip_address=get_client_ip(self.request)
+        )
+
+# --- Public Static Page View ---
+
+class PublicStaticPageDetailView(generics.RetrieveAPIView):
+    permission_classes = [permissions.AllowAny]
+    serializer_class = StaticPageSerializer
+    queryset = StaticPage.objects.filter(is_published=True)
+    lookup_field = 'slug'
+

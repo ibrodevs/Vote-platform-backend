@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import NewsArticle, FAQItem, NewsCategory
+from .models import NewsArticle, FAQItem, NewsCategory, StaticPage
 
 class NewsArticleSerializer(serializers.ModelSerializer):
     category_display = serializers.CharField(source='get_category_display', read_only=True)
@@ -49,3 +49,13 @@ class FAQItemSerializer(serializers.ModelSerializer):
             'order', 'is_active', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+class StaticPageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StaticPage
+        fields = [
+            'id', 'slug', 'title', 'title_ky', 'content', 'content_ky',
+            'is_published', 'updated_at', 'created_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+

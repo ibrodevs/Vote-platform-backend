@@ -22,8 +22,11 @@ class Candidate(TimeStampedUUIDModel):
     faculty = models.CharField(max_length=255, blank=True, default='', verbose_name="Факультет")
     course = models.PositiveSmallIntegerField(default=1, blank=True, verbose_name="Курс")
     position = models.CharField(max_length=255, blank=True, default="Кандидат", verbose_name="Должность")
+    position_ky = models.CharField(max_length=255, blank=True, default="", verbose_name="Кызмат орду (KY)")
     short_bio = models.TextField(blank=True, verbose_name="Краткая биография")
+    short_bio_ky = models.TextField(blank=True, default="", verbose_name="Кыскача өмүр баяны (KY)")
     program = models.TextField(blank=True, verbose_name="Предвыборная программа")
+    program_ky = models.TextField(blank=True, default="", verbose_name="Шайлоо алдындагы программасы (KY)")
     order = models.PositiveIntegerField(default=0, verbose_name="Порядок отображения")
 
     class Meta:
