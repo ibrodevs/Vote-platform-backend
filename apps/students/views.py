@@ -22,7 +22,7 @@ from .services import clean_phone_number, send_student_otp
 from .tasks import process_student_upload_batch
 from apps.universities.models import University
 from apps.accounts.models import AdminActionLog
-from apps.core.permissions import IsAdminUserWithRole, IsUniversityAdmin, IsStudentAuthenticated
+from apps.core.permissions import IsAdminUserWithRole, IsUniversityAdmin, IsStudentAuthenticated, IsNotObserver
 
 def get_client_ip(request):
     x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
@@ -361,7 +361,7 @@ class AdminStudentDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Student.objects.all()
 
 class AdminStudentUploadView(APIView):
-    permission_classes = [IsAdminUserWithRole]
+    permission_classes = [IsAdminUserWithRole, IsNotObserver]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request, university_id):

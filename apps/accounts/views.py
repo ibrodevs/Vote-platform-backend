@@ -44,7 +44,16 @@ class AdminMeView(APIView):
 class AdminUsersListView(generics.ListCreateAPIView):
     permission_classes = [IsSuperAdmin]
     serializer_class = AdminUserSerializer
-    queryset = AdminUser.objects.all().order_by('-created_at')
+
+    def get_queryset(self):
+        qs = AdminUser.objects.select_related('university').all().order_by('-created_at')
+        uni = self.request.query_params.get('university')
+        if uni:
+            qs = qs.filter(university_id=uni)
+        role = self.request.query_params.get('role')
+        if role:
+            qs = qs.filter(role=role)
+        return qs
 
     def perform_create(self, serializer):
         user = serializer.save()
@@ -53,7 +62,36 @@ class AdminUsersListView(generics.ListCreateAPIView):
             action="create_admin_user",
             target_type="admin_user",
             target_id=str(user.id),
+            details={"email": user.email, "role": user.role, "university_id": str(user.university_id) if user.university_id else None},
+            ip_address=get_client_ip(self.request)
+        )
+
+class AdminUserDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsSuperAdmin]
+    serializer_class = AdminUserSerializer
+    queryset = AdminUser.objects.select_related('university').all()
+
+    def perform_update(self, serializer):
+        user = serializer.save()
+        AdminActionLog.objects.create(
+            admin=self.request.user,
+            action="update_admin_user",
+            target_type="admin_user",
+            target_id=str(user.id),
             details={"email": user.email, "role": user.role},
+            ip_address=get_client_ip(self.request)
+        )
+
+    def perform_destroy(self, instance):
+        user_id = str(instance.id)
+        user_email = instance.email
+        instance.delete()
+        AdminActionLog.objects.create(
+            admin=self.request.user,
+            action="delete_admin_user",
+            target_type="admin_user",
+            target_id=user_id,
+            details={"email": user_email},
             ip_address=get_client_ip(self.request)
         )
 

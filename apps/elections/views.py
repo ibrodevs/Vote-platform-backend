@@ -18,7 +18,7 @@ from .serializers import (
 from apps.candidates.models import Candidate
 from apps.students.models import Student
 from apps.voting.models import VoteRecord, Ballot
-from apps.core.permissions import IsAdminUserWithRole, IsStudentAuthenticated
+from apps.core.permissions import IsAdminUserWithRole, IsStudentAuthenticated, IsNotObserver
 from apps.accounts.models import AdminActionLog
 
 def get_client_ip(request):
@@ -99,13 +99,17 @@ class AdminElectionDetailView(generics.RetrieveUpdateDestroyAPIView):
         instance.delete()
 
 class AdminElectionStartView(APIView):
-    permission_classes = [IsAdminUserWithRole]
+    permission_classes = [IsAdminUserWithRole, IsNotObserver]
 
     def post(self, request, pk):
         try:
             election = Election.objects.get(id=pk)
         except Election.DoesNotExist:
             return Response({"error": {"code": "not_found", "message": "Выборы не найдены"}}, status=status.HTTP_404_NOT_FOUND)
+
+        if getattr(request.user, 'role', None) != 'super_admin' and not request.user.is_superuser:
+            if election.university_id != request.user.university_id:
+                return Response({"error": {"code": "forbidden", "message": "Доступ ограничен вашим университетом"}}, status=status.HTTP_403_FORBIDDEN)
 
         if election.candidates.count() < 1:
             return Response({"error": {"code": "no_candidates", "message": "Нельзя запустить выборы без кандидатов"}}, status=status.HTTP_400_BAD_REQUEST)
@@ -125,13 +129,17 @@ class AdminElectionStartView(APIView):
         return Response({"success": True, "message": "Выборы успешно запущены", "status": election.status})
 
 class AdminElectionFinishView(APIView):
-    permission_classes = [IsAdminUserWithRole]
+    permission_classes = [IsAdminUserWithRole, IsNotObserver]
 
     def post(self, request, pk):
         try:
             election = Election.objects.get(id=pk)
         except Election.DoesNotExist:
             return Response({"error": {"code": "not_found", "message": "Выборы не найдены"}}, status=status.HTTP_404_NOT_FOUND)
+
+        if getattr(request.user, 'role', None) != 'super_admin' and not request.user.is_superuser:
+            if election.university_id != request.user.university_id:
+                return Response({"error": {"code": "forbidden", "message": "Доступ ограничен вашим университетом"}}, status=status.HTTP_403_FORBIDDEN)
 
         election.status = Election.Status.FINISHED
         election.save(update_fields=['status'])
@@ -148,13 +156,17 @@ class AdminElectionFinishView(APIView):
         return Response({"success": True, "message": "Выборы успешно завершены", "status": election.status})
 
 class AdminElectionCancelView(APIView):
-    permission_classes = [IsAdminUserWithRole]
+    permission_classes = [IsAdminUserWithRole, IsNotObserver]
 
     def post(self, request, pk):
         try:
             election = Election.objects.get(id=pk)
         except Election.DoesNotExist:
             return Response({"error": {"code": "not_found", "message": "Выборы не найдены"}}, status=status.HTTP_404_NOT_FOUND)
+
+        if getattr(request.user, 'role', None) != 'super_admin' and not request.user.is_superuser:
+            if election.university_id != request.user.university_id:
+                return Response({"error": {"code": "forbidden", "message": "Доступ ограничен вашим университетом"}}, status=status.HTTP_403_FORBIDDEN)
 
         election.status = Election.Status.CANCELLED
         election.save(update_fields=['status'])
@@ -178,6 +190,10 @@ class AdminElectionTurnoutView(APIView):
             election = Election.objects.select_related('university').get(id=pk)
         except Election.DoesNotExist:
             return Response({"error": {"code": "not_found", "message": "Выборы не найдены"}}, status=status.HTTP_404_NOT_FOUND)
+
+        if getattr(request.user, 'role', None) != 'super_admin' and not request.user.is_superuser:
+            if election.university_id != request.user.university_id:
+                return Response({"error": {"code": "forbidden", "message": "Доступ ограничен вашим университетом"}}, status=status.HTTP_403_FORBIDDEN)
 
         total_eligible = Student.objects.filter(university=election.university, is_active=True).count()
         total_voted = VoteRecord.objects.filter(election=election).count()
@@ -231,6 +247,10 @@ class AdminElectionResultsView(APIView):
         except Election.DoesNotExist:
             return Response({"error": {"code": "not_found", "message": "Выборы не найдены"}}, status=status.HTTP_404_NOT_FOUND)
 
+        if getattr(request.user, 'role', None) != 'super_admin' and not request.user.is_superuser:
+            if election.university_id != request.user.university_id:
+                return Response({"error": {"code": "forbidden", "message": "Доступ ограничен вашим университетом"}}, status=status.HTTP_403_FORBIDDEN)
+
         # In accordance with Section 4.5 & 6.2: results are hidden until finished, unless explicitly configured
         if election.status != Election.Status.FINISHED and not election.results_visible_to_admin_before_finish:
             return Response({
@@ -281,6 +301,10 @@ class AdminElectionResultsExportView(APIView):
             election = Election.objects.select_related('university').get(id=pk)
         except Election.DoesNotExist:
             return Response({"error": {"code": "not_found", "message": "Выборы не найдены"}}, status=status.HTTP_404_NOT_FOUND)
+
+        if getattr(request.user, 'role', None) != 'super_admin' and not request.user.is_superuser:
+            if election.university_id != request.user.university_id:
+                return Response({"error": {"code": "forbidden", "message": "Доступ ограничен вашим университетом"}}, status=status.HTTP_403_FORBIDDEN)
 
         if election.status != Election.Status.FINISHED and not election.results_visible_to_admin_before_finish:
             return Response({"error": {"code": "results_hidden", "message": "Экспорт доступен только после завершения выборов"}}, status=status.HTTP_403_FORBIDDEN)

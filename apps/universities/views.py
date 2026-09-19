@@ -3,7 +3,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from .models import University
 from .serializers import UniversitySerializer, UniversityPublicSerializer
-from apps.core.permissions import IsSuperAdmin, IsAdminUserWithRole
+from apps.core.permissions import IsSuperAdmin, IsAdminUserWithRole, IsNotObserver
 from apps.accounts.models import AdminActionLog
 
 def get_client_ip(request):
@@ -124,7 +124,7 @@ class UniversityFacultyDetailView(generics.RetrieveUpdateDestroyAPIView):
         return Faculty.objects.filter(university_id=uni_id)
 
 class UniversityToggleRegistrationView(APIView):
-    permission_classes = [IsAdminUserWithRole]
+    permission_classes = [IsAdminUserWithRole, IsNotObserver]
 
     def post(self, request, pk=None):
         user = request.user

@@ -5,7 +5,7 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from .models import Candidate
 from .serializers import CandidateSerializer, CandidatePublicSerializer, CandidateReorderSerializer
 from apps.elections.models import Election
-from apps.core.permissions import IsAdminUserWithRole, IsStudentAuthenticated
+from apps.core.permissions import IsAdminUserWithRole, IsStudentAuthenticated, IsNotObserver
 from apps.accounts.models import AdminActionLog
 
 def get_client_ip(request):
@@ -70,7 +70,7 @@ class AdminCandidateDetailView(generics.RetrieveUpdateDestroyAPIView):
         instance.delete()
 
 class AdminCandidateReorderView(APIView):
-    permission_classes = [IsAdminUserWithRole]
+    permission_classes = [IsAdminUserWithRole, IsNotObserver]
 
     def post(self, request, election_id):
         serializer = CandidateReorderSerializer(data=request.data)

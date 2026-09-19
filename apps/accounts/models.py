@@ -26,6 +26,7 @@ class AdminUser(AbstractBaseUser, PermissionsMixin):
     class Role(models.TextChoices):
         SUPER_ADMIN = 'super_admin', 'Супер-администратор'
         UNIVERSITY_ADMIN = 'university_admin', 'Администратор университета'
+        OBSERVER = 'observer', 'Сотрудник (только просмотр)'
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     email = models.EmailField(unique=True, verbose_name="Email")

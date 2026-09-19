@@ -11,17 +11,28 @@ class UniversityShortSerializer(serializers.ModelSerializer):
 
 class AdminUserSerializer(serializers.ModelSerializer):
     university_details = UniversityShortSerializer(source='university', read_only=True)
+    password = serializers.CharField(write_only=True, required=False, allow_blank=True)
 
     class Meta:
         model = AdminUser
         fields = [
-            'id', 'email', 'full_name', 'role', 'university',
+            'id', 'email', 'full_name', 'role', 'university', 'password',
             'university_details', 'is_active', 'created_at'
         ]
         read_only_fields = ['id', 'created_at']
-        extra_kwargs = {
-            'password': {'write_only': True, 'required': False}
-        }
+
+    def to_internal_value(self, data):
+        data = data.copy() if hasattr(data, 'copy') else dict(data)
+        if 'university_id' in data and not data.get('university'):
+            data['university'] = data['university_id']
+        return super().to_internal_value(data)
+
+    def validate(self, attrs):
+        role = attrs.get('role', getattr(self.instance, 'role', None))
+        university = attrs.get('university', getattr(self.instance, 'university', None))
+        if role in [AdminUser.Role.UNIVERSITY_ADMIN, AdminUser.Role.OBSERVER] and not university:
+            raise serializers.ValidationError({"university": "Укажите университет для сотрудника"})
+        return attrs
 
     def create(self, validated_data):
         password = validated_data.pop('password', None)
@@ -32,6 +43,15 @@ class AdminUserSerializer(serializers.ModelSerializer):
             user.set_unusable_password()
         user.save()
         return user
+
+    def update(self, instance, validated_data):
+        password = validated_data.pop('password', None)
+        for attr, val in validated_data.items():
+            setattr(instance, attr, val)
+        if password:
+            instance.set_password(password)
+        instance.save()
+        return instance
 
 class AdminLoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
