@@ -8,7 +8,7 @@ from django.http import JsonResponse
 def api_root(request):
     return JsonResponse({
         'status': 'online',
-        'message': 'Voting Platform API is operational and accepting requests from all origins.',
+        'message': 'Dobush.kg API is operational and accepting requests from all origins.',
         'version': '1.0.0',
         'endpoints': {
             'health': '/api/health/',
@@ -22,7 +22,7 @@ def api_root(request):
     })
 
 def health_check(request):
-    return JsonResponse({'status': 'healthy', 'service': 'voting-backend'})
+    return JsonResponse({'status': 'healthy', 'service': 'dobush-backend'})
 
 urlpatterns = [
     # Public root & healthcheck
