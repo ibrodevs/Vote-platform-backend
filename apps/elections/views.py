@@ -431,3 +431,13 @@ class StudentElectionDetailView(APIView):
             data['is_eligible'] = None
 
         return Response(data, status=status.HTTP_200_OK)
+
+class PublicRecentElectionsView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        elections = Election.objects.select_related('university').prefetch_related('candidates').exclude(
+            status=Election.Status.CANCELLED
+        ).order_by('-created_at')[:6]
+        serializer = ElectionSerializer(elections, many=True, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
