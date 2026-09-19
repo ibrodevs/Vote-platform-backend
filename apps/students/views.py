@@ -332,7 +332,14 @@ class AdminUniversityStudentsListView(generics.ListCreateAPIView):
         if only_registered and only_registered.lower() in ['true', '1', 'yes']:
             qs = qs.exclude(password='').exclude(password__isnull=True)
 
-        return qs
+        voted_param = self.request.query_params.get('voted')
+        if voted_param is not None:
+            if voted_param.lower() in ['true', '1', 'yes']:
+                qs = qs.filter(vote_records__isnull=False).distinct()
+            elif voted_param.lower() in ['false', '0', 'no']:
+                qs = qs.filter(vote_records__isnull=True).distinct()
+
+        return qs.prefetch_related('vote_records')
 
     def perform_create(self, serializer):
         uni_id = self.kwargs.get('university_id')

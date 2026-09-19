@@ -92,5 +92,10 @@ class StudentElectionCandidatesListView(APIView):
             return Response({"error": {"code": "not_found", "message": "Выборы не найдены"}}, status=status.HTTP_404_NOT_FOUND)
 
         candidates = election.candidates.all().order_by('order', 'created_at')
-        serializer = CandidatePublicSerializer(candidates, many=True)
+        serializer = CandidatePublicSerializer(candidates, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+class CandidatePublicDetailView(generics.RetrieveAPIView):
+    permission_classes = [permissions.AllowAny]
+    serializer_class = CandidatePublicSerializer
+    queryset = Candidate.objects.select_related('election', 'university').all()

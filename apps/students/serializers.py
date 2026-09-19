@@ -1,18 +1,41 @@
+import os
 from rest_framework import serializers
 from .models import Student, UploadBatch, StudentAuthSession
 
 class StudentSerializer(serializers.ModelSerializer):
     university_name = serializers.CharField(source='university.name', read_only=True)
     university_code = serializers.CharField(source='university.code', read_only=True)
+    has_voted = serializers.SerializerMethodField()
+    voted_at = serializers.SerializerMethodField()
+    votes_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Student
         fields = [
             'id', 'university', 'university_name', 'university_code',
             'student_id', 'full_name', 'phone_number', 'email', 'photo',
-            'faculty', 'group', 'course', 'is_active', 'created_at'
+            'faculty', 'group', 'course', 'is_active',
+            'has_voted', 'voted_at', 'votes_count', 'created_at'
         ]
         read_only_fields = ['id', 'created_at']
+
+    def get_has_voted(self, obj) -> bool:
+        # Check if pre-annotated or query vote_records
+        if hasattr(obj, 'prefetched_vote_records'):
+            return len(obj.prefetched_vote_records) > 0
+        return obj.vote_records.exists()
+
+    def get_votes_count(self, obj) -> int:
+        if hasattr(obj, 'prefetched_vote_records'):
+            return len(obj.prefetched_vote_records)
+        return obj.vote_records.count()
+
+    def get_voted_at(self, obj):
+        if hasattr(obj, 'prefetched_vote_records') and obj.prefetched_vote_records:
+            latest = sorted(obj.prefetched_vote_records, key=lambda r: r.voted_at, reverse=True)[0]
+            return latest.voted_at.isoformat()
+        latest = obj.vote_records.order_by('-voted_at').first()
+        return latest.voted_at.isoformat() if latest else None
 
     def to_representation(self, instance):
         ret = super().to_representation(instance)

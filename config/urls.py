@@ -43,6 +43,7 @@ urlpatterns = [
     path('api/v1/admin/upload-batches/', include('apps.students.urls_batches')),
     path('api/v1/admin/elections/', include('apps.elections.urls_admin')),
     path('api/v1/admin/candidates/', include('apps.candidates.urls_admin')),
+    path('api/v1/candidates/', include('apps.candidates.urls_public')),
     path('api/v1/elections/', include('apps.elections.urls_student')),
     path('api/v1/voting/', include('apps.voting.urls')),
 

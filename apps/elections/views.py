@@ -183,14 +183,43 @@ class AdminElectionTurnoutView(APIView):
         total_voted = VoteRecord.objects.filter(election=election).count()
         turnout_percent = round((total_voted / total_eligible * 100), 2) if total_eligible > 0 else 0.0
 
-        # Note: STRICT SECRET BALLOT - NO CANDIDATE BREAKDOWN RETURNED HERE
+        candidates_data = []
+        for candidate in election.candidates.all().order_by('order'):
+            votes = Ballot.objects.filter(election=election, candidate=candidate).count()
+            percent = round((votes / total_voted * 100), 1) if total_voted > 0 else 0.0
+
+            photo_url = None
+            if candidate.photo:
+                try:
+                    photo_url = request.build_absolute_uri(candidate.photo.url)
+                except Exception:
+                    photo_url = candidate.photo.url
+            elif candidate.photo_url:
+                photo_url = candidate.photo_url
+
+            candidates_data.append({
+                "candidate_id": str(candidate.id),
+                "full_name": candidate.full_name,
+                "photo": photo_url,
+                "faculty": candidate.faculty,
+                "course": candidate.course,
+                "position": candidate.position,
+                "short_bio": candidate.short_bio,
+                "votes": votes,
+                "percent": percent
+            })
+
+        # Sort descending by votes
+        candidates_data.sort(key=lambda c: c['votes'], reverse=True)
+
         return Response({
             "election_id": str(election.id),
             "election_title": election.title,
             "status": election.status,
             "total_eligible": total_eligible,
             "total_voted": total_voted,
-            "turnout_percent": turnout_percent
+            "turnout_percent": turnout_percent,
+            "candidates": candidates_data
         }, status=status.HTTP_200_OK)
 
 class AdminElectionResultsView(APIView):
@@ -344,7 +373,7 @@ class StudentAvailableElectionsView(APIView):
                 ends_at__gte=now
             ).exclude(id__in=voted_election_ids).order_by('ends_at')
 
-        serializer = ElectionStudentSerializer(elections, many=True)
+        serializer = ElectionStudentSerializer(elections, many=True, context={'request': request})
         data = serializer.data
         for item in data:
             try:
@@ -364,7 +393,7 @@ class StudentElectionDetailView(APIView):
         except Election.DoesNotExist:
             return Response({"error": {"code": "not_found", "message": "Выборы не найдены"}}, status=status.HTTP_404_NOT_FOUND)
 
-        serializer = ElectionStudentSerializer(election)
+        serializer = ElectionStudentSerializer(election, context={'request': request})
         data = serializer.data
 
         # If student is authenticated, check if student belongs to this uni and whether they voted

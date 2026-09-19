@@ -1,3 +1,4 @@
+import os
 from rest_framework import serializers
 from .models import Candidate
 
@@ -57,10 +58,14 @@ class CandidateSerializer(serializers.ModelSerializer):
         return ret
 
 class CandidatePublicSerializer(serializers.ModelSerializer):
+    university_name = serializers.CharField(source='university.name', read_only=True)
+    election_title = serializers.CharField(source='election.title', read_only=True)
+
     class Meta:
         model = Candidate
         fields = [
-            'id', 'full_name', 'photo', 'photo_url', 'faculty', 'course',
+            'id', 'election', 'election_title', 'university', 'university_name',
+            'full_name', 'photo', 'photo_url', 'faculty', 'course',
             'position', 'short_bio', 'program', 'order'
         ]
 
