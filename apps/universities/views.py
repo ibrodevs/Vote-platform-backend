@@ -122,3 +122,74 @@ class UniversityFacultyDetailView(generics.RetrieveUpdateDestroyAPIView):
         from .models import Faculty
         uni_id = self.kwargs.get('university_id')
         return Faculty.objects.filter(university_id=uni_id)
+
+class UniversityToggleRegistrationView(APIView):
+    permission_classes = [IsAdminUserWithRole]
+
+    def post(self, request, pk=None):
+        user = request.user
+
+        # Support toggling for ALL universities if requested by super admin
+        if request.data.get('all') is True or str(request.data.get('university_id', '')).lower() == 'all':
+            if getattr(user, 'role', None) != 'super_admin' and not user.is_superuser:
+                return Response(
+                    {"error": {"code": "forbidden", "message": "Только супер-администратор может менять статус для всех вузов"}},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            is_open = request.data.get('is_registration_open')
+            if is_open is None:
+                is_open = not University.objects.filter(is_registration_open=True).exists()
+            University.objects.all().update(is_registration_open=bool(is_open))
+            return Response({
+                "all": True,
+                "is_registration_open": bool(is_open),
+                "message": f"Регистрация студентов для всех вузов {'открыта' if is_open else 'закрыта'}"
+            })
+
+        uni_id = pk or request.data.get('university_id')
+        if not uni_id:
+            if getattr(user, 'university', None):
+                uni_id = user.university.id
+            else:
+                return Response(
+                    {"error": {"code": "missing_university", "message": "Укажите ID университета"}},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        try:
+            uni = University.objects.get(id=uni_id)
+        except University.DoesNotExist:
+            return Response(
+                {"error": {"code": "university_not_found", "message": "Университет не найден"}},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if getattr(user, 'role', None) != 'super_admin' and not user.is_superuser:
+            if not user.university or str(user.university.id) != str(uni.id):
+                return Response(
+                    {"error": {"code": "forbidden", "message": "Нет прав на изменение настроек этого университета"}},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        if 'is_registration_open' in request.data:
+            uni.is_registration_open = bool(request.data['is_registration_open'])
+        else:
+            uni.is_registration_open = not uni.is_registration_open
+
+        uni.save(update_fields=['is_registration_open'])
+
+        AdminActionLog.objects.create(
+            admin=user,
+            action="toggle_registration",
+            target_type="university",
+            target_id=str(uni.id),
+            details={"is_registration_open": uni.is_registration_open, "university": uni.name},
+            ip_address=get_client_ip(request)
+        )
+
+        return Response({
+            "id": str(uni.id),
+            "name": uni.name,
+            "is_registration_open": uni.is_registration_open,
+            "message": f"Регистрация студентов {'открыта' if uni.is_registration_open else 'закрыта'}"
+        })

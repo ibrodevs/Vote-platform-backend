@@ -130,3 +130,37 @@ class StudentAuthTests(TestCase):
         res_avail_after = self.client.get('/api/v1/elections/available/?all=true')
         self.assertEqual(res_avail_after.status_code, 200)
         self.assertTrue(res_avail_after.data[0]['has_voted'])
+
+    def test_closed_registration_blocks_register_but_allows_login(self):
+        # 1. Close registration
+        self.university.is_registration_open = False
+        self.university.save()
+
+        # 2. Attempt to register new student should be blocked with 403
+        reg_res = self.client.post('/api/v1/students/auth/register/', {
+            "full_name": "Новый Студент",
+            "university_id": str(self.university.id),
+            "course": 1,
+            "group": "ПО-1-23",
+            "email": "newstudent@kstu.kg",
+            "password": "mypassword"
+        }, format='json')
+        self.assertEqual(reg_res.status_code, 403)
+        self.assertEqual(reg_res.data['error']['code'], 'registration_closed')
+
+        # 3. Existing student should still be able to login
+        from django.contrib.auth.hashers import make_password
+        Student.objects.create(
+            university=self.university,
+            full_name="Существующий Студент",
+            course=2,
+            group="ПО-2-22",
+            email="existing@kstu.kg",
+            password=make_password("existingpass123")
+        )
+        login_res = self.client.post('/api/v1/students/auth/login/', {
+            "email": "existing@kstu.kg",
+            "password": "existingpass123"
+        }, format='json')
+        self.assertEqual(login_res.status_code, 200)
+        self.assertIn('student_token', login_res.data)

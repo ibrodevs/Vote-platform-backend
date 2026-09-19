@@ -7,6 +7,7 @@ class University(TimeStampedUUIDModel):
     code = models.SlugField(max_length=50, unique=True, verbose_name="Код университета (slug)")
     logo = models.ImageField(upload_to='universities/logos/', null=True, blank=True, verbose_name="Логотип")
     is_active = models.BooleanField(default=True, verbose_name="Активен")
+    is_registration_open = models.BooleanField(default=True, verbose_name="Регистрация студентов открыта")
 
     class Meta:
         verbose_name = "Университет"

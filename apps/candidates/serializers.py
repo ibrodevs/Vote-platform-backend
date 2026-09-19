@@ -24,6 +24,16 @@ class CandidateSerializer(serializers.ModelSerializer):
             'program': {'required': False, 'allow_blank': True},
         }
 
+    def validate_short_bio(self, value):
+        if value and len(value.strip()) > 100:
+            raise serializers.ValidationError("Краткая биография не должна превышать 100 символов.")
+        return value
+
+    def validate_program(self, value):
+        if value and len(value.strip()) > 100:
+            raise serializers.ValidationError("Предвыборная программа не должна превышать 100 символов.")
+        return value
+
     def create(self, validated_data):
         if 'election' in validated_data and 'university' not in validated_data:
             validated_data['university'] = validated_data['election'].university

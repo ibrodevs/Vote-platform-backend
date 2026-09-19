@@ -163,6 +163,12 @@ class StudentRegisterView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
+        if not university.is_registration_open:
+            return Response(
+                {"error": {"code": "registration_closed", "message": "Регистрация новых студентов временно закрыта администратором. Доступен только вход в систему."}},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         if Student.objects.filter(email__iexact=email).exists():
             return Response(
                 {"error": {"code": "email_already_exists", "message": "Студент с таким email уже зарегистрирован. Пожалуйста, выполните вход."}},

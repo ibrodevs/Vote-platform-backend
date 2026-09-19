@@ -20,7 +20,7 @@ class UniversitySerializer(serializers.ModelSerializer):
     class Meta:
         model = University
         fields = [
-            'id', 'name', 'name_ky', 'code', 'logo', 'is_active',
+            'id', 'name', 'name_ky', 'code', 'logo', 'is_active', 'is_registration_open',
             'created_at', 'students_count', 'active_elections_count',
             'faculties', 'faculties_input'
         ]
@@ -64,10 +64,10 @@ class UniversityPublicSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = University
-        fields = ['id', 'name', 'name_ky', 'code', 'logo', 'is_active', 'faculties']
+        fields = ['id', 'name', 'name_ky', 'code', 'logo', 'is_active', 'is_registration_open', 'faculties']
 
 class UniversityShortSerializer(serializers.ModelSerializer):
     class Meta:
         model = University
-        fields = ['id', 'name', 'name_ky', 'code', 'is_active']
+        fields = ['id', 'name', 'name_ky', 'code', 'is_active', 'is_registration_open']
 
