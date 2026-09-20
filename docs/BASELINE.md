@@ -8,15 +8,21 @@
 
 ## 1. Baseline тестов
 
-| Набор | Тестов | Результат |
-|---|---|---|
-| Существующие (`apps/`) | 12 | OK |
-| Contract-тесты (`tests/contract/`) | 127 | OK, 3 expected failures |
-| **Весь набор** | **139** | **OK, 3 expected failures** |
+| Набор | Тестов | SQLite | PostgreSQL 16.15 |
+|---|---|---|---|
+| Существующие (`apps/`) | 12 | OK | OK |
+| Contract-тесты (`tests/contract/`) | 127 | OK, 3 expected failures | OK, 3 expected failures |
+| Тесты настроек (`tests/config/`) — с этапа 1 | 10 | OK | OK |
+| **Весь набор** | **149** | **OK, 3 expected failures** | **OK, 3 expected failures** |
 
-СУБД прогона — **SQLite** (`DB_ENGINE` по умолчанию). Это baseline, а не доказательство
-корректности: SQLite имеет другую модель конкуррентности, другие блокировки и не поддерживает
-PostgreSQL advisory locks (ТЗ п.107). Перевод прогона на PostgreSQL — этап 1.
+Прогон на PostgreSQL добавлен на этапе 1 (ТЗ п.107). Расхождений между СУБД нет:
+139 тестов этапа 0 дают одинаковый результат на обеих.
+
+**Оговорка о существующем concurrency-тесте.** `apps/voting/tests.py::test_concurrency_race_condition_protection`
+зелёный на PostgreSQL, но проходит он по «неправильной» причине: параллельные голоса
+сериализуются глобальным `Election.objects.select_for_update()`, который этап 2 обязан
+убрать (ТЗ п.7). После его удаления защита должна обеспечиваться UNIQUE-констрейнтом,
+и этот же тест продолжит быть зелёным уже по правильной причине.
 
 ### Состав contract-тестов
 
@@ -31,10 +37,18 @@ PostgreSQL advisory locks (ТЗ п.107). Перевод прогона на Post
 ### Команды
 
 ```bash
-python3 manage.py test                      # весь набор
-python3 manage.py test tests.contract       # только contract-тесты
-python3 manage.py test apps                 # только существующие
+# SQLite (быстро, для локальной разработки)
+python3 manage.py test
+python3 manage.py test tests.contract
+python3 manage.py test apps
+
+# PostgreSQL (обязательно для критических integration/concurrency тестов, ТЗ п.107)
+DJANGO_SETTINGS_MODULE=config.settings_test python3 manage.py test
 ```
+
+Прогон на PostgreSQL требует запущенного сервера и доступной роли; параметры
+подключения переопределяются переменными `DB_NAME`, `DB_USER`, `DB_PASSWORD`,
+`DB_HOST`, `DB_PORT`.
 
 ---
 
