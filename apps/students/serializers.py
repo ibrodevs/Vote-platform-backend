@@ -19,21 +19,27 @@ class StudentSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'created_at']
 
+    # Раньше здесь были obj.vote_records.exists() / .count() / .order_by().
+    # Вьюха делала prefetch_related('vote_records'), но пользы от него не было:
+    # exists() и order_by() prefetch-кэш НЕ используют и всегда идут в базу.
+    # Получалось три запроса на каждого студента списка — 44 SQL на 20 студентов.
+    # Теперь всё считает база одной агрегацией (ТЗ п.26).
+    VOTES_COUNT_ANNOTATION = 'votes_count_annotated'
+    LAST_VOTED_ANNOTATION = 'last_voted_at_annotated'
+
     def get_has_voted(self, obj) -> bool:
-        # Check if pre-annotated or query vote_records
-        if hasattr(obj, 'prefetched_vote_records'):
-            return len(obj.prefetched_vote_records) > 0
-        return obj.vote_records.exists()
+        return self.get_votes_count(obj) > 0
 
     def get_votes_count(self, obj) -> int:
-        if hasattr(obj, 'prefetched_vote_records'):
-            return len(obj.prefetched_vote_records)
+        annotated = getattr(obj, self.VOTES_COUNT_ANNOTATION, None)
+        if annotated is not None:
+            return annotated
         return obj.vote_records.count()
 
     def get_voted_at(self, obj):
-        if hasattr(obj, 'prefetched_vote_records') and obj.prefetched_vote_records:
-            latest = sorted(obj.prefetched_vote_records, key=lambda r: r.voted_at, reverse=True)[0]
-            return latest.voted_at.isoformat()
+        if hasattr(obj, self.LAST_VOTED_ANNOTATION):
+            latest = getattr(obj, self.LAST_VOTED_ANNOTATION)
+            return latest.isoformat() if latest else None
         latest = obj.vote_records.order_by('-voted_at').first()
         return latest.voted_at.isoformat() if latest else None
 

@@ -51,6 +51,7 @@
 | Concurrency при высоком параллелизме | **проверено** при 100 и 200 одновременных соединениях, 0 deadlock'ов |
 | Docker-окружение | **проверено**: 4 сервиса, миграции, тесты, HTTP, Celery-воркер |
 | Поведение при недоступном Redis | **проверено** с реально остановленным контейнером |
+| Число SQL на горячих endpoint'ах | **измерено до и после**, см. `docs/PERFORMANCE.md`; ни один не растёт с данными |
 | Производительность (RPS, latency) | **не измерялась** — этап 10 |
 | Процедура миграции на production-объёме | **не выполнялась** — нет доступа и нет таких данных |
 
@@ -207,11 +208,11 @@ docker compose exec web python manage.py test
 | ~~`apps/voting/models.py`~~ | ~~дублирующий индекс~~ — **удалён на этапе 2** | 14 | ✅ 2 |
 | ~~`apps/voting/models.py`~~ | ~~`__str__` раскрывали стороны~~ — **исправлено на этапе 2** | 4 | ✅ 2 |
 | ~~`apps/core/authentication.py:50`~~ | ~~SELECT на каждый запрос~~ — **устранено на этапе 3**: 0 SQL при попадании в Redis | 18 | ✅ 3 |
-| `apps/elections/serializers.py:26` | `obj.candidates.count()` в `SerializerMethodField` → N+1 на списках | 26 | 4 |
-| `apps/elections/views.py:245` | results: `for candidate: Ballot.objects.filter(...).count()` → 1+N | 27 | 4 |
-| `apps/elections/views.py:310` | xlsx-экспорт: та же 1+N, плюс CPU/RAM в web-воркере | 27, 42 | 4, 7 |
-| `apps/elections/views.py:404` | `StudentAvailableElectionsView` → `ElectionStudentSerializer` с вложенными кандидатами → N+1 | 25 | 4 |
-| `apps/universities/serializers.py:30` | `students_count`, `active_elections_count` через `.count()` на каждый объект списка | 26 | 4 |
+| ~~`apps/elections/serializers.py:26`~~ | ~~N+1 на списках~~ — **устранено на этапе 4**: annotate(Count) | 26 | ✅ 4 |
+| ~~`apps/elections/views.py:245`~~ | ~~1+N подсчётов~~ — **устранено на этапе 4**: один GROUP BY | 27 | ✅ 4 |
+| `apps/elections/views.py:310` | 1+N ~~устранена на этапе 4~~; CPU/RAM в web-воркере остаётся | 27, 42 | ✅ 4 / 7 |
+| ~~`apps/elections/views.py:404`~~ | ~~62 запроса~~ — **устранено на этапе 4**: 3 запроса, не растёт | 25 | ✅ 4 |
+| ~~`apps/universities/serializers.py:30`~~ | ~~два COUNT на объект~~ — **устранено на этапе 4** | 26 | ✅ 4 |
 | `apps/students/views.py:170` | `Student.objects.filter(email__iexact=...).exists()` перед INSERT — гонка при параллельной регистрации | 15 | 5 |
 | `apps/students/views.py:126` | `attempts += 1; save()` — неатомарный инкремент при параллельных verify | 35 | 8 |
 | `apps/students/views.py:373` | `file_obj.read()` целиком в память, затем передача байтов в Celery-задачу | 41 | 7 |

@@ -175,7 +175,9 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
     ),
-    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    # ТЗ п.93: размер страницы настраивается клиентом, но ограничен сверху —
+    # иначе ?page_size=1000000 выгрузил бы всю таблицу студентов одним ответом.
+    'DEFAULT_PAGINATION_CLASS': 'apps.core.pagination.DefaultPagination',
     'PAGE_SIZE': 20,
     'DEFAULT_FILTER_BACKENDS': (
         'django_filters.rest_framework.DjangoFilterBackend',

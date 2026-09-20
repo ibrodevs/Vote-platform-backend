@@ -2,6 +2,7 @@ import io
 import datetime
 import jwt
 from django.conf import settings
+from django.db.models import Count, Max
 from django.utils import timezone
 from django.http import HttpResponse
 from rest_framework import generics, permissions, status
@@ -374,6 +375,15 @@ class AdminUniversityStudentsListView(generics.ListCreateAPIView):
         if only_registered and only_registered.lower() in ['true', '1', 'yes']:
             qs = qs.exclude(password='').exclude(password__isnull=True)
 
+        # Аннотации вместо prefetch_related: сериализатору нужны только
+        # количество и последняя дата, сами строки голосований не нужны.
+        # distinct=True обязателен — фильтр по ?voted= делает JOIN,
+        # и без него строки задвоились бы (ТЗ п.26).
+        qs = qs.select_related('university').annotate(
+            votes_count_annotated=Count('vote_records', distinct=True),
+            last_voted_at_annotated=Max('vote_records__voted_at'),
+        )
+
         voted_param = self.request.query_params.get('voted')
         if voted_param is not None:
             if voted_param.lower() in ['true', '1', 'yes']:
@@ -381,7 +391,7 @@ class AdminUniversityStudentsListView(generics.ListCreateAPIView):
             elif voted_param.lower() in ['false', '0', 'no']:
                 qs = qs.filter(vote_records__isnull=True).distinct()
 
-        return qs.prefetch_related('vote_records')
+        return qs
 
     def perform_create(self, serializer):
         uni_id = self.kwargs.get('university_id')

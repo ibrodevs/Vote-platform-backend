@@ -2,6 +2,7 @@ import io
 import uuid
 import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+from django.db.models import Count, Prefetch
 from django.utils import timezone
 from django.http import HttpResponse
 from rest_framework import generics, status, permissions
@@ -13,6 +14,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
 
 from .models import Election
+from .aggregates import election_results, eligible_voters_count, results_are_visible
 from .services import (
     ElectionStateError,
     cancel_election,
@@ -64,7 +66,12 @@ class AdminElectionListCreateView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        qs = Election.objects.all()
+        # ТЗ п.26: число кандидатов считает база одной агрегацией, а не
+        # отдельный COUNT на каждый объект списка. Аннотация дешевле prefetch:
+        # для счётчика не нужно тянуть по сети сами строки кандидатов.
+        qs = Election.objects.select_related('university', 'created_by').annotate(
+            candidates_count_annotated=Count('candidates', distinct=True)
+        )
         if getattr(user, 'role', None) != 'super_admin' and not user.is_superuser:
             qs = qs.filter(university_id=user.university_id)
         return qs
@@ -91,7 +98,9 @@ class AdminElectionDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        qs = Election.objects.all()
+        qs = Election.objects.select_related('university', 'created_by').annotate(
+            candidates_count_annotated=Count('candidates', distinct=True)
+        )
         if getattr(user, 'role', None) != 'super_admin' and not user.is_superuser:
             qs = qs.filter(university_id=user.university_id)
         return qs
@@ -227,7 +236,7 @@ class AdminElectionTurnoutView(APIView):
             if election.university_id != request.user.university_id:
                 return Response({"error": {"code": "forbidden", "message": "Доступ ограничен вашим университетом"}}, status=status.HTTP_403_FORBIDDEN)
 
-        total_eligible = Student.objects.filter(university=election.university, is_active=True).count()
+        total_eligible = eligible_voters_count(election)
         total_voted = VoteRecord.objects.filter(election=election).count()
         turnout_percent = round((total_voted / total_eligible * 100), 2) if total_eligible > 0 else 0.0
 
@@ -256,7 +265,8 @@ class AdminElectionResultsView(APIView):
                 return Response({"error": {"code": "forbidden", "message": "Доступ ограничен вашим университетом"}}, status=status.HTTP_403_FORBIDDEN)
 
         # In accordance with Section 4.5 & 6.2: results are hidden until finished, unless explicitly configured
-        if election.status != Election.Status.FINISHED and not election.results_visible_to_admin_before_finish:
+        # Правило видимости живёт в одном месте — иначе две вьюхи разойдутся
+        if not results_are_visible(election):
             return Response({
                 "error": {
                     "code": "results_hidden",
@@ -264,37 +274,16 @@ class AdminElectionResultsView(APIView):
                 }
             }, status=status.HTTP_403_FORBIDDEN)
 
-        total_eligible = Student.objects.filter(university=election.university, is_active=True).count()
-        total_voted = Ballot.objects.filter(election=election).count()
-        turnout_percent = round((total_voted / total_eligible * 100), 2) if total_eligible > 0 else 0.0
-
-        candidates_data = []
-        for candidate in election.candidates.all().order_by('order'):
-            votes = Ballot.objects.filter(election=election, candidate=candidate).count()
-            percent = round((votes / total_voted * 100), 2) if total_voted > 0 else 0.0
-            candidates_data.append({
-                "candidate_id": str(candidate.id),
-                "full_name": candidate.full_name,
-                "photo": candidate.photo.url if candidate.photo else None,
-                "photo_url": candidate.photo_url,
-                "faculty": candidate.faculty,
-                "course": candidate.course,
-                "position": candidate.position,
-                "votes": votes,
-                "percent": percent
-            })
-
-        # Sort by votes descending to show leader first
-        candidates_data.sort(key=lambda c: c['votes'], reverse=True)
+        summary = election_results(election)
 
         return Response({
             "election_id": str(election.id),
             "election_title": election.title,
             "university_name": election.university.name,
-            "total_eligible": total_eligible,
-            "total_voted": total_voted,
-            "turnout_percent": turnout_percent,
-            "candidates": candidates_data
+            "total_eligible": summary["total_eligible"],
+            "total_voted": summary["total_voted"],
+            "turnout_percent": summary["turnout_percent"],
+            "candidates": summary["candidates"],
         }, status=status.HTTP_200_OK)
 
 class AdminElectionResultsExportView(APIView):
@@ -310,12 +299,14 @@ class AdminElectionResultsExportView(APIView):
             if election.university_id != request.user.university_id:
                 return Response({"error": {"code": "forbidden", "message": "Доступ ограничен вашим университетом"}}, status=status.HTTP_403_FORBIDDEN)
 
-        if election.status != Election.Status.FINISHED and not election.results_visible_to_admin_before_finish:
+        if not results_are_visible(election):
             return Response({"error": {"code": "results_hidden", "message": "Экспорт доступен только после завершения выборов"}}, status=status.HTTP_403_FORBIDDEN)
 
-        total_eligible = Student.objects.filter(university=election.university, is_active=True).count()
-        total_voted = Ballot.objects.filter(election=election).count()
-        turnout_percent = round((total_voted / total_eligible * 100), 2) if total_eligible > 0 else 0.0
+        # Тот же расчёт, что и в results/: одна функция вместо двух копий
+        summary = election_results(election)
+        total_eligible = summary["total_eligible"]
+        total_voted = summary["total_voted"]
+        turnout_percent = summary["turnout_percent"]
 
         # Build styled Excel document
         wb = openpyxl.Workbook()
@@ -346,17 +337,12 @@ class AdminElectionResultsExportView(APIView):
         ws.append([])
         ws.append(["Место", "Кандидат", "Факультет", "Курс", "Должность", "Голосов", "Процент"])
 
-        # Candidate rows
-        candidates_list = []
-        for c in election.candidates.all():
-            v = Ballot.objects.filter(election=election, candidate=c).count()
-            p = round((v / total_voted * 100), 2) if total_voted > 0 else 0.0
-            candidates_list.append((c, v, p))
-
-        candidates_list.sort(key=lambda x: x[1], reverse=True)
-
-        for rank, (cand, votes, pct) in enumerate(candidates_list, start=1):
-            ws.append([rank, cand.full_name, cand.faculty, cand.course, cand.position, votes, f"{pct}%"])
+        # Строки кандидатов берутся из уже посчитанного агрегата
+        for rank, row in enumerate(summary["candidates"], start=1):
+            ws.append([
+                rank, row["full_name"], row["faculty"], row["course"],
+                row["position"], row["votes"], f"{row['percent']}%",
+            ])
 
         # Column widths
         for col in ws.columns:
@@ -393,12 +379,24 @@ class StudentAvailableElectionsView(APIView):
 
         include_all = request.query_params.get('all', 'false').lower() == 'true'
 
+        # ElectionStudentSerializer разворачивает вложенных кандидатов, а
+        # CandidatePublicSerializer читает candidate.university.name и
+        # candidate.election.title. Без select_related внутри Prefetch это
+        # два лишних запроса НА КАЖДОГО кандидата (ТЗ п.25).
+        base = Election.objects.select_related('university').prefetch_related(
+            Prefetch(
+                'candidates',
+                queryset=Candidate.objects.select_related('university', 'election')
+                .order_by('order', 'created_at'),
+            )
+        )
+
         if include_all:
-            elections = Election.objects.filter(
+            elections = base.filter(
                 university_id=university_id
             ).exclude(status=Election.Status.DRAFT).order_by('-created_at')
         else:
-            elections = Election.objects.filter(
+            elections = base.filter(
                 university_id=university_id,
                 status=Election.Status.ACTIVE,
                 starts_at__lte=now,
@@ -421,7 +419,13 @@ class StudentElectionDetailView(APIView):
 
     def get(self, request, pk):
         try:
-            election = Election.objects.select_related('university').get(id=pk)
+            election = Election.objects.select_related('university').prefetch_related(
+                Prefetch(
+                    'candidates',
+                    queryset=Candidate.objects.select_related('university', 'election')
+                    .order_by('order', 'created_at'),
+                )
+            ).get(id=pk)
         except Election.DoesNotExist:
             return Response({"error": {"code": "not_found", "message": "Выборы не найдены"}}, status=status.HTTP_404_NOT_FOUND)
 
@@ -447,7 +451,12 @@ class PublicRecentElectionsView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
-        featured = list(Election.objects.select_related('university').prefetch_related('candidates').filter(
+        # ElectionSerializer рендерит только candidates_count, сами кандидаты
+        # не нужны — поэтому аннотация, а не prefetch_related.
+        base = Election.objects.select_related('university', 'created_by').annotate(
+            candidates_count_annotated=Count('candidates', distinct=True)
+        )
+        featured = list(base.filter(
             is_featured=True
         ).exclude(status=Election.Status.CANCELLED).order_by('featured_order', '-created_at')[:6])
 
@@ -456,7 +465,7 @@ class PublicRecentElectionsView(APIView):
         else:
             featured_ids = [e.id for e in featured]
             remaining_limit = 6 - len(featured)
-            remaining = list(Election.objects.select_related('university').prefetch_related('candidates').exclude(
+            remaining = list(base.exclude(
                 id__in=featured_ids
             ).exclude(status=Election.Status.CANCELLED).order_by('-created_at')[:remaining_limit])
             elections = featured + remaining
@@ -470,7 +479,9 @@ class AdminFeaturedElectionsManageView(APIView):
 
     def get(self, request):
         """List all elections with featured info for superadmin management."""
-        elections = Election.objects.select_related('university').prefetch_related('candidates').exclude(
+        elections = Election.objects.select_related('university', 'created_by').annotate(
+            candidates_count_annotated=Count('candidates', distinct=True)
+        ).exclude(
             status=Election.Status.CANCELLED
         ).order_by('-is_featured', 'featured_order', '-created_at')
         serializer = ElectionSerializer(elections, many=True, context={'request': request})

@@ -23,7 +23,11 @@ class AdminElectionCandidatesListView(generics.ListCreateAPIView):
     def get_queryset(self):
         election_id = self.kwargs.get('election_id')
         user = self.request.user
-        qs = Candidate.objects.filter(election_id=election_id)
+        # CandidateSerializer читает election.title и university.name —
+        # без select_related это два запроса на каждого кандидата списка.
+        qs = Candidate.objects.select_related('election', 'university').filter(
+            election_id=election_id
+        )
         if getattr(user, 'role', None) != 'super_admin' and not user.is_superuser:
             qs = qs.filter(university_id=user.university_id)
         return qs.order_by('order', 'created_at')
@@ -45,7 +49,7 @@ class AdminCandidateDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAdminUserWithRole]
     serializer_class = CandidateSerializer
     parser_classes = [MultiPartParser, FormParser, JSONParser]
-    queryset = Candidate.objects.all()
+    queryset = Candidate.objects.select_related('election', 'university').all()
 
     def perform_update(self, serializer):
         candidate = serializer.save()
@@ -91,7 +95,9 @@ class StudentElectionCandidatesListView(APIView):
         except Election.DoesNotExist:
             return Response({"error": {"code": "not_found", "message": "Выборы не найдены"}}, status=status.HTTP_404_NOT_FOUND)
 
-        candidates = election.candidates.all().order_by('order', 'created_at')
+        candidates = Candidate.objects.select_related('election', 'university').filter(
+            election_id=election.id
+        ).order_by('order', 'created_at')
         serializer = CandidatePublicSerializer(candidates, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
