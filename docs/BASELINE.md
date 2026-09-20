@@ -14,7 +14,8 @@
 | Contract-тесты (`tests/contract/`) | 127 | OK, 3 expected failures | OK, 3 expected failures |
 | Тесты настроек (`tests/config/`) — с этапа 1 | 10 | OK | OK |
 | Тесты `audit_db_data` — с этапа 1 | 12 | OK | OK |
-| **Весь набор** | **161** | **OK, 3 expected failures** | **OK, 3 expected failures** |
+| Тесты Celery-режима — с этапа 1 | 2 | OK | OK |
+| **Весь набор** | **163** | **OK, 3 expected failures** | **OK, 3 expected failures** |
 
 Прогон на PostgreSQL добавлен на этапе 1 (ТЗ п.107). Расхождений между СУБД нет:
 139 тестов этапа 0 дают одинаковый результат на обеих.
@@ -47,9 +48,16 @@ python3 manage.py test apps
 DJANGO_SETTINGS_MODULE=config.settings_test python3 manage.py test
 ```
 
+```bash
+# В Docker (PostgreSQL + Redis + Celery worker)
+docker compose exec web python manage.py test
+```
+
 Прогон на PostgreSQL требует запущенного сервера и доступной роли; параметры
 подключения переопределяются переменными `DB_NAME`, `DB_USER`, `DB_PASSWORD`,
 `DB_HOST`, `DB_PORT`.
+
+Все три способа дают одинаковый результат: 163 теста, OK, 3 expected failures.
 
 ---
 
@@ -106,6 +114,18 @@ DJANGO_SETTINGS_MODULE=config.settings_test python3 manage.py test
 | **Тест** | `test_deactivated_student_can_still_vote_with_old_token` (фиксирует факт) |
 | **ТЗ** | п.18, 19 |
 | **Этап** | 3 — вместе с `auth_version` и Redis principal cache |
+
+### D-08 — тесты отправляли задачи Celery в реальный брокер (ИСПРАВЛЕНО на этапе 1)
+
+| | |
+|---|---|
+| **Файл** | `config/settings.py` (блок Celery) |
+| **Суть** | Django не переводит Celery в eager-режим под тестами. При `CELERY_TASK_ALWAYS_EAGER=False` (docker-compose, CI) тест `test_student_upload_returns_202_batch_id` отправлял задачу в **реальный** брокер |
+| **Последствие** | Живой воркер получал задачу и искал `UploadBatch` в реальной базе вместо тестовой → `Batch ... not found`. Тест оставался зелёным (он проверяет только 202), но прогон трогал чужие данные и зависел от доступности Redis |
+| **Обнаружено** | в логах воркера при первом реальном запуске docker-compose: лишняя задача с временем прогона тестов |
+| **Исправление** | `if TESTING: CELERY_TASK_ALWAYS_EAGER = True` в `config/settings.py` |
+| **Проверено** | счётчик задач воркера не меняется за полный прогон (до фикса рос на 1) |
+| **Тесты** | `tests/config/test_settings_celery.py` (2 теста) |
 
 ### D-05 — OTP хранится и логируется в открытом виде
 

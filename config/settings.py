@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 from datetime import timedelta
 from django.core.exceptions import ImproperlyConfigured
@@ -243,6 +244,7 @@ if extra_csrf:
 X_FRAME_OPTIONS = 'ALLOWALL'
 
 # Celery & Redis
+TESTING = 'test' in sys.argv
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://127.0.0.1:6379/0')
 CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://127.0.0.1:6379/0')
 CELERY_ACCEPT_CONTENT = ['json']
@@ -252,6 +254,13 @@ CELERY_TIMEZONE = TIME_ZONE
 # Always eager fallback in case redis is not available in dev or PythonAnywhere free tier
 CELERY_TASK_ALWAYS_EAGER = os.getenv('CELERY_TASK_ALWAYS_EAGER', 'True').lower() == 'true'
 CELERY_TASK_EAGER_PROPAGATES = True
+
+# Под тестами задачи всегда выполняются синхронно, независимо от окружения.
+# Иначе при CELERY_TASK_ALWAYS_EAGER=False (docker, CI) тест отправляет задачу
+# в РЕАЛЬНЫЙ брокер, и живой воркер ищет объект в реальной базе вместо тестовой:
+# задача падает с 'not found', мусорит в логах и трогает чужие данные.
+if TESTING:
+    CELERY_TASK_ALWAYS_EAGER = True
 
 # SMS / OTP Verification
 MOCK_SMS = os.getenv('MOCK_SMS', 'True').lower() == 'true'

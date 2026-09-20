@@ -55,6 +55,10 @@ docker compose exec web python manage.py migrate
 dev-пароли и Redis без аутентификации, поэтому сервисы не должны быть видны
 из локальной сети.
 
+Порты на хосте: приложение `8000`, PostgreSQL `5433`, Redis `6380` —
+последние два смещены, чтобы не конфликтовать с локально установленными
+сервисами на `5432` и `6379`.
+
 ---
 
 ## Конфигурация
@@ -85,7 +89,13 @@ python manage.py test
 
 # PostgreSQL — обязателен для integration- и concurrency-тестов
 DJANGO_SETTINGS_MODULE=config.settings_test python manage.py test
+
+# В Docker: PostgreSQL + Redis + Celery worker
+docker compose exec web python manage.py test
 ```
+
+Под тестами задачи Celery всегда выполняются синхронно, независимо от
+`CELERY_TASK_ALWAYS_EAGER` — иначе прогон отправлял бы задачи в реальный брокер.
 
 Прогон на SQLite **не является доказательством корректности**: у него другая
 модель конкуррентности, другие блокировки, другие планы запросов, и он не
