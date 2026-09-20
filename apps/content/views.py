@@ -3,7 +3,9 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework.filters import SearchFilter, OrderingFilter
+from rest_framework.filters import OrderingFilter
+
+from apps.core.filters import MinLengthSearchFilter
 from django.db.models import F
 
 from .models import NewsArticle, FAQItem, StaticPage
@@ -54,7 +56,7 @@ class AdminNewsListCreateView(generics.ListCreateAPIView):
     permission_classes = [CanManageNews]
     serializer_class = NewsArticleSerializer
     parser_classes = [MultiPartParser, FormParser, JSONParser]
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filter_backends = [DjangoFilterBackend, MinLengthSearchFilter, OrderingFilter]
     filterset_fields = ['category', 'is_published']
     search_fields = ['title', 'title_ky', 'summary', 'content']
     ordering_fields = ['published_at', 'created_at', 'views', 'title']
@@ -107,7 +109,7 @@ class AdminNewsDetailView(generics.RetrieveUpdateDestroyAPIView):
 class AdminFAQListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsSuperAdmin]
     serializer_class = FAQItemSerializer
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filter_backends = [DjangoFilterBackend, MinLengthSearchFilter, OrderingFilter]
     filterset_fields = ['is_active']
     search_fields = ['question', 'question_ky', 'answer', 'answer_ky']
     ordering_fields = ['order', 'created_at']
@@ -157,7 +159,7 @@ class AdminFAQDetailView(generics.RetrieveUpdateDestroyAPIView):
 class PublicNewsListView(generics.ListAPIView):
     permission_classes = [permissions.AllowAny]
     serializer_class = NewsArticleSerializer
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filter_backends = [DjangoFilterBackend, MinLengthSearchFilter, OrderingFilter]
     filterset_fields = ['category']
     search_fields = ['title', 'title_ky', 'summary', 'summary_ky', 'content', 'content_ky']
     ordering_fields = ['published_at', 'views']

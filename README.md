@@ -134,7 +134,19 @@ python manage.py audit_db_data --fail-on-issues
 # Проверка конфигурации и миграций
 python manage.py check
 python manage.py makemigrations --check --dry-run
+
+# Синтетические данные для анализа планов и бенчмарков
+python manage.py generate_test_data --students 200000 --elections 60
+python manage.py generate_test_data --clear
+
+# Планы выполнения горячих запросов (только PostgreSQL)
+python manage.py explain_hot_queries
+python manage.py explain_hot_queries --only "login"
 ```
+
+После массовой загрузки данных обязателен `VACUUM ANALYZE`: без актуальной
+карты видимости Index Only Scan не работает и запросы падают обратно
+на чтение кучи.
 
 ---
 
@@ -145,6 +157,7 @@ python manage.py makemigrations --check --dry-run
 | [docs/API_CONTRACT.md](docs/API_CONTRACT.md) | все endpoints, схемы ответов, реестр `error.code` |
 | [docs/FRONTEND_USAGE.md](docs/FRONTEND_USAGE.md) | какие вызовы делает фронтенд и что он ожидает |
 | [docs/BASELINE.md](docs/BASELINE.md) | состояние тестов и реестр известных дефектов |
+| [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | измеренные бюджеты запросов и планы EXPLAIN |
 | [docs/SQLITE_TO_POSTGRES.md](docs/SQLITE_TO_POSTGRES.md) | процедура переноса базы и отката |
 | [docs/superpowers/plans/](docs/superpowers/plans/) | план high-load оптимизации по этапам |
 
@@ -156,7 +169,8 @@ python manage.py makemigrations --check --dry-run
 [docs/superpowers/plans/2026-09-20-highload-roadmap.md](docs/superpowers/plans/2026-09-20-highload-roadmap.md).
 
 Выполнено: этап 0 (фиксация API-контракта), этап 1 (PostgreSQL и окружение),
-этап 2 (корректность и конкуррентность голосования), этап 3 (аутентификация).
+этап 2 (корректность и конкуррентность голосования), этап 3 (аутентификация),
+этап 4 (устранение N+1), этап 5 (индексы).
 
 Характеристики производительности **не измерялись**. Никаких заявлений о
 пропускной способности здесь не будет, пока не появятся результаты нагрузочных

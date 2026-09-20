@@ -181,7 +181,9 @@ REST_FRAMEWORK = {
     'PAGE_SIZE': 20,
     'DEFAULT_FILTER_BACKENDS': (
         'django_filters.rest_framework.DjangoFilterBackend',
-        'rest_framework.filters.SearchFilter',
+        # ТЗ п.94: поиск короче 3 символов игнорируется — он совпадает
+        # почти со всей таблицей и стоит полного скана при нулевой пользе.
+        'apps.core.filters.MinLengthSearchFilter',
         'rest_framework.filters.OrderingFilter',
     ),
     'EXCEPTION_HANDLER': 'apps.core.exceptions.custom_exception_handler',

@@ -11,10 +11,10 @@
 | Набор | Тестов | SQLite | PostgreSQL 16.15 |
 |---|---|---|---|
 | Существующие (`apps/`) | 12 | OK | OK |
-| Contract-тесты (`tests/contract/`) | 203 | OK | OK |
+| Contract-тесты (`tests/contract/`) | 251 | OK | OK |
 | Тесты настроек (`tests/config/`) | 12 | OK | OK |
 | Concurrency-тесты (`tests/concurrency/`) — с этапа 2 | 15 | пропускаются | OK |
-| **Весь набор** | **263** | **OK, 20 skipped** | **OK, 1 skipped** |
+| **Весь набор** | **311** | **OK, 23 skipped** | **OK, 1 skipped** |
 
 **Expected failures: 0** (было 3 до этапа 2 — D-01, D-02, D-03 исправлены).
 
@@ -52,6 +52,8 @@
 | Docker-окружение | **проверено**: 4 сервиса, миграции, тесты, HTTP, Celery-воркер |
 | Поведение при недоступном Redis | **проверено** с реально остановленным контейнером |
 | Число SQL на горячих endpoint'ах | **измерено до и после**, см. `docs/PERFORMANCE.md`; ни один не растёт с данными |
+| Планы запросов (`EXPLAIN ANALYZE`) | **измерены до и после на 200 000 студентов**, см. `docs/PERFORMANCE.md` раздел 3 |
+| Компромисс по trigram-индексам | **измерен в обе стороны** (поиск против скорости импорта), решение обосновано цифрами |
 | Производительность (RPS, latency) | **не измерялась** — этап 10 |
 | Процедура миграции на production-объёме | **не выполнялась** — нет доступа и нет таких данных |
 
@@ -213,7 +215,7 @@ docker compose exec web python manage.py test
 | `apps/elections/views.py:310` | 1+N ~~устранена на этапе 4~~; CPU/RAM в web-воркере остаётся | 27, 42 | ✅ 4 / 7 |
 | ~~`apps/elections/views.py:404`~~ | ~~62 запроса~~ — **устранено на этапе 4**: 3 запроса, не растёт | 25 | ✅ 4 |
 | ~~`apps/universities/serializers.py:30`~~ | ~~два COUNT на объект~~ — **устранено на этапе 4** | 26 | ✅ 4 |
-| `apps/students/views.py:170` | `Student.objects.filter(email__iexact=...).exists()` перед INSERT — гонка при параллельной регистрации | 15 | 5 |
+| ~~`apps/students/views.py:170`~~ | ~~гонка при регистрации~~ — **закрыта на этапе 5**: UNIQUE(LOWER(email)) | 15 | ✅ 5 |
 | `apps/students/views.py:126` | `attempts += 1; save()` — неатомарный инкремент при параллельных verify | 35 | 8 |
 | `apps/students/views.py:373` | `file_obj.read()` целиком в память, затем передача байтов в Celery-задачу | 41 | 7 |
 

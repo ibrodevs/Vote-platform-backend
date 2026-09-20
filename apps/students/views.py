@@ -2,6 +2,7 @@ import io
 import datetime
 import jwt
 from django.conf import settings
+from django.db import IntegrityError, transaction
 from django.db.models import Count, Max
 from django.utils import timezone
 from django.http import HttpResponse
@@ -10,7 +11,9 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework.filters import SearchFilter, OrderingFilter
+from rest_framework.filters import OrderingFilter
+
+from apps.core.filters import MinLengthSearchFilter
 
 from django.contrib.auth.hashers import make_password, check_password
 from .models import Student, UploadBatch, StudentAuthSession
@@ -218,16 +221,29 @@ class StudentRegisterView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        student = Student.objects.create(
-            university=university,
-            full_name=data['full_name'].strip(),
-            faculty=data.get('faculty', '').strip(),
-            course=data['course'],
-            group=data['group'].strip(),
-            email=email,
-            password=make_password(data['password']),
-            is_active=True
-        )
+        # Проверка exists() выше — быстрый путь для обычного случая, но она
+        # проигрывает гонке: два параллельных запроса пройдут её одновременно.
+        # Последняя линия защиты — UNIQUE-констрейнт по LOWER(email) (ТЗ п.15).
+        # Его срабатывание обязано выглядеть для клиента так же, как проверка,
+        # а не как 500.
+        try:
+            with transaction.atomic():
+                student = Student.objects.create(
+                    university=university,
+                    full_name=data['full_name'].strip(),
+                    faculty=data.get('faculty', '').strip(),
+                    course=data['course'],
+                    group=data['group'].strip(),
+                    email=email,
+                    password=make_password(data['password']),
+                    is_active=True
+                )
+        except IntegrityError:
+            return Response(
+                {"error": {"code": "email_already_exists",
+                           "message": "Студент с таким email уже зарегистрирован. Пожалуйста, выполните вход."}},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         token = create_student_token(student)
 
@@ -351,7 +367,7 @@ class StudentProfileView(APIView):
 class AdminUniversityStudentsListView(generics.ListCreateAPIView):
     permission_classes = [IsAdminUserWithRole]
     serializer_class = StudentSerializer
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filter_backends = [DjangoFilterBackend, MinLengthSearchFilter, OrderingFilter]
     filterset_fields = ['faculty', 'course', 'is_active']
     search_fields = ['student_id', 'full_name', 'phone_number', 'email', 'faculty']
     ordering_fields = ['full_name', 'student_id', 'course', 'created_at']

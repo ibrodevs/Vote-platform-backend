@@ -11,7 +11,9 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework.filters import SearchFilter, OrderingFilter
+from rest_framework.filters import OrderingFilter
+
+from apps.core.filters import MinLengthSearchFilter
 
 from .models import Election
 from .aggregates import election_results, eligible_voters_count, results_are_visible
@@ -58,7 +60,7 @@ class AdminElectionListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAdminUserWithRole]
     serializer_class = ElectionSerializer
     parser_classes = [MultiPartParser, FormParser, JSONParser]
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filter_backends = [DjangoFilterBackend, MinLengthSearchFilter, OrderingFilter]
     filterset_fields = ['status', 'university', 'is_featured']
     search_fields = ['title', 'title_ky', 'description']
     ordering_fields = ['starts_at', 'created_at', 'title', 'featured_order']

@@ -1,5 +1,7 @@
 import uuid
 from django.db import models
+from django.db.models import Q
+from django.db.models.functions import Lower, Upper
 from apps.core.models import TimeStampedUUIDModel
 from apps.universities.models import University
 from apps.accounts.models import AdminUser
@@ -87,6 +89,45 @@ class Student(TimeStampedUUIDModel):
         verbose_name = "Студент"
         verbose_name_plural = "Студенты"
         ordering = ['full_name']
+        constraints = [
+            # ТЗ п.15. Регистрация проверяла Student.objects.filter(email__iexact=...)
+            # перед INSERT — два параллельных запроса проходили проверку
+            # одновременно. Та же гонка по природе, что была в голосовании,
+            # и закрывается так же: констрейнтом базы, а не проверкой в Python.
+            #
+            # Условие обязательно: пустых и NULL email в базе много
+            # (студенты, загруженные списком, email не имеют), и без частичного
+            # индекса второй же такой студент нарушил бы уникальность.
+            models.UniqueConstraint(
+                Lower('email'),
+                condition=~Q(email=None) & ~Q(email=''),
+                name='uniq_student_email_lower',
+            ),
+        ]
+        # Каждый индекс ниже добавлен по конкретному плану EXPLAIN,
+        # снятому на 200 000 студентов. Планы до и после — в docs/PERFORMANCE.md.
+        indexes = [
+            # Логин: WHERE UPPER(email) = UPPER(%s) AND is_active.
+            # Было: Parallel Seq Scan, 5771 буферов, 29.6 мс на каждый вход.
+            models.Index(
+                Upper('email'),
+                name='student_email_upper_idx',
+            ),
+            # identify: WHERE university_id = %s AND UPPER(student_id) = UPPER(%s).
+            # Было: индекс по university_id давал 10 000 строк, и все они
+            # отбрасывались фильтром уже после чтения кучи.
+            models.Index(
+                'university',
+                Upper('student_id'),
+                name='student_uni_code_upper_idx',
+            ),
+            # Число избирателей: COUNT(*) WHERE university_id = %s AND is_active.
+            # Было: Bitmap Index Scan + чтение 5771 блока кучи ради фильтра.
+            models.Index(
+                fields=['university', 'is_active'],
+                name='student_uni_active_idx',
+            ),
+        ]
 
     # Поля, изменение которых обязано немедленно обесценить выданные токены.
     SECURITY_SENSITIVE_FIELDS = ('is_active', 'password')
