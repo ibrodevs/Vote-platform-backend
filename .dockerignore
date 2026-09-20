@@ -1,0 +1,17 @@
+.git
+.github
+__pycache__
+*.py[cod]
+*.egg-info
+.venv
+venv
+db.sqlite3
+db.sqlite3-journal
+.env
+.env.*
+media
+staticfiles
+docs
+.DS_Store
+.idea
+.vscode
