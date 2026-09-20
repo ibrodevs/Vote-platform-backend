@@ -183,6 +183,11 @@ REST_FRAMEWORK = {
         'rest_framework.filters.OrderingFilter',
     ),
     'EXCEPTION_HANDLER': 'apps.core.exceptions.custom_exception_handler',
+    # D-03: по умолчанию DRF перехватывает ?format= для выбора рендерера, из-за
+    # чего ?format=xlsx на /admin/students/template/ давал 404, не доходя до view.
+    # Переименование освобождает ?format= для прикладного использования
+    # и сохраняет возможность DRF под именем ?_format=.
+    'URL_FORMAT_OVERRIDE': '_format',
 }
 
 # JWT Configuration

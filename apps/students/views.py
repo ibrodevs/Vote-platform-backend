@@ -132,6 +132,14 @@ class StudentVerifyView(APIView):
         auth_session.is_verified = True
         auth_session.save(update_fields=['is_verified'])
 
+        # D-01: раньше метод заканчивался здесь без return, DRF получал None
+        # и поднимал AssertionError -> 500. Весь OTP-вход был нерабочим,
+        # хотя фронтенд (app/vote/[code]/verify) его использует.
+        return Response(
+            build_student_auth_response(auth_session.student, request),
+            status=status.HTTP_200_OK,
+        )
+
 def create_student_token(student):
     exp_time = timezone.now() + datetime.timedelta(days=7)
     payload = {
@@ -143,6 +151,40 @@ def create_student_token(student):
         'iat': int(timezone.now().timestamp()),
     }
     return jwt.encode(payload, settings.SECRET_KEY, algorithm='HS256')
+
+def build_student_auth_response(student, request=None):
+    """Единое тело ответа для register, login и verify.
+
+    Вынесено, чтобы три точки выдачи токена не разъезжались: фронтенд
+    одинаково разбирает ответ всех трёх (lib/api.ts).
+    """
+    photo_url = None
+    if student.photo:
+        try:
+            photo_url = request.build_absolute_uri(student.photo.url) if request else student.photo.url
+        except Exception:
+            photo_url = None
+
+    return {
+        "student_token": create_student_token(student),
+        "student": {
+            "id": str(student.id),
+            "student_id": student.student_id,
+            "full_name": student.full_name,
+            "email": student.email,
+            "photo": photo_url,
+            "group": student.group,
+            "faculty": student.faculty,
+            "course": student.course,
+        },
+        "university": {
+            "id": str(student.university.id),
+            "name": student.university.name,
+            "name_ky": student.university.name_ky,
+            "code": student.university.code,
+        },
+    }
+
 
 class StudentRegisterView(APIView):
     permission_classes = [permissions.AllowAny]

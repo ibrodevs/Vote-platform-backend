@@ -230,31 +230,26 @@ class AdminStudentsContractTest(ContractTestCase):
         self.assertIn("text/csv", res["Content-Type"])
         self.assertIn("students_template.csv", res["Content-Disposition"])
 
-    def test_students_template_format_param_is_swallowed_by_drf(self):
-        """D-03: ?format=... перехватывается content negotiation DRF, а не view.
-
-        URL_FORMAT_OVERRIDE по умолчанию равен 'format', поэтому DRF пытается
-        подобрать рендерер 'csv'/'xlsx', не находит и отдаёт 404 раньше,
-        чем AdminStudentTemplateView прочитает query_params.
-        """
+    def test_students_template_csv_param_works(self):
+        """D-03 исправлен: ?format= больше не перехватывается DRF."""
         self.as_admin(self.superadmin)
-        for value in ("csv", "xlsx"):
-            with self.subTest(format=value):
-                res = self.client.get(f"/api/v1/admin/students/template/?format={value}")
-                self.assertEqual(res.status_code, 404)
+        res = self.client.get("/api/v1/admin/students/template/?format=csv")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("text/csv", res["Content-Type"])
 
-    @unittest.expectedFailure
     def test_students_template_xlsx_is_reachable(self):
-        """D-03: намеренное поведение — xlsx-ветка view должна быть достижима.
-
-        Сейчас недостижима ни при каком значении параметра. Снять
-        expectedFailure после исправления (переименовать параметр или задать
-        URL_FORMAT_OVERRIDE = None).
-        """
+        """D-03 исправлен: xlsx-ветка view была недостижима ни при каком входе."""
         self.as_admin(self.superadmin)
         res = self.client.get("/api/v1/admin/students/template/?format=xlsx")
         self.assertEqual(res.status_code, 200)
         self.assertIn("spreadsheetml", res["Content-Type"])
+        self.assertIn("students_template.xlsx", res["Content-Disposition"])
+
+    def test_drf_format_override_still_available_under_new_name(self):
+        """Возможность DRF не потеряна, а переехала на ?_format=."""
+        self.as_admin(self.superadmin)
+        res = self.client.get("/api/v1/admin/universities/?_format=json")
+        self.assertEqual(res.status_code, 200)
 
 
 class AdminCandidatesContractTest(ContractTestCase):

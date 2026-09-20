@@ -210,14 +210,8 @@ class StudentOtpContractTest(ContractTestCase):
         self.assertEqual(res.status_code, 400)
         self.assertErrorEnvelope(res, "phone_mismatch")
 
-    @unittest.expectedFailure
     def test_verify_returns_student_token(self):
-        """D-01: StudentVerifyView не возвращает Response → 500.
-
-        Фронтенд (app/vote/[university_code]/verify/page.tsx) ожидает
-        {student_token, student, university} и кладёт токен в sessionStorage.
-        Снять expectedFailure после исправления на этапе 2.
-        """
+        """D-01 исправлен на этапе 2: раньше view не возвращал Response → 500."""
         session = make_auth_session(self.student, code="123456")
         res = self.client.post(
             "/api/v1/auth/student/verify/",
