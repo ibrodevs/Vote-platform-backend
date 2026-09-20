@@ -15,10 +15,12 @@ class CastVoteView(APIView):
 
         election_id = serializer.validated_data['election_id']
         candidate_id = serializer.validated_data['candidate_id']
-        student = request.user.student
+        # Принципал из кэша, а не request.user.student: обращение к полной
+        # модели стоило бы лишнего SELECT на каждом голосе (ТЗ п.18, 48).
+        voter = request.user.principal
 
         try:
-            cast_secret_ballot(student, election_id, candidate_id)
+            cast_secret_ballot(voter, election_id, candidate_id)
             return Response({
                 "success": True,
                 "message": "Ваш голос успешно и анонимно принят"
@@ -35,8 +37,10 @@ class VoteStatusView(APIView):
     permission_classes = [IsStudentAuthenticated]
 
     def get(self, request, election_id):
-        student = request.user.student
-        record = VoteRecord.objects.filter(election_id=election_id, student=student).first()
+        # Достаточно идентификатора — полная модель студента здесь не нужна
+        record = VoteRecord.objects.filter(
+            election_id=election_id, student_id=request.user.id
+        ).first()
         return Response({
             "has_voted": bool(record),
             "voted_at": record.voted_at if record else None

@@ -38,7 +38,6 @@ from django.utils import timezone
 from apps.candidates.models import Candidate
 from apps.core.db_locks import election_vote_lock
 from apps.elections.models import Election
-from apps.students.models import Student
 
 from .models import Ballot, VoteRecord
 
@@ -101,8 +100,12 @@ class InvalidCandidateError(VotingError):
         super().__init__("Указанный кандидат не участвует в данных выборах", code="invalid_candidate")
 
 
-def cast_secret_ballot(student: Student, election_id: str, candidate_id: str) -> bool:
+def cast_secret_ballot(student, election_id: str, candidate_id: str) -> bool:
     """Принимает один тайный голос.
+
+    `student` — любой объект с `.id` и `.university_id`: и модель Student,
+    и StudentPrincipal из кэша аутентификации. Горячий путь передаёт принципал,
+    чтобы не делать лишний SELECT полной модели (ТЗ п.18).
 
     Возвращает True только после фактического COMMIT обеих строк.
     При любой ошибке транзакция полностью откатывается: состояний
@@ -131,7 +134,11 @@ def cast_secret_ballot(student: Student, election_id: str, candidate_id: str) ->
 
         # Университет берётся ТОЛЬКО из аутентифицированной личности,
         # никогда из тела запроса (ТЗ п.53).
-        if election.university_id != student.university_id:
+        #
+        # Сравнение через str: у модели Student это UUID, у StudentPrincipal
+        # из кэша — строка (иначе он не сериализуется). Без нормализации
+        # сравнение было бы всегда ложным, и ни один голос не проходил бы.
+        if str(election.university_id) != str(student.university_id):
             raise IneligibleStudentError()
 
         if not Candidate.objects.filter(id=candidate_id, election_id=election.id).exists():

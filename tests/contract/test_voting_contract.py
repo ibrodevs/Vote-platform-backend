@@ -131,18 +131,18 @@ class CastVoteContractTest(ContractTestCase):
         self.assertEqual(res.status_code, 400)
         self.assertErrorEnvelope(res)
 
-    def test_deactivated_student_can_still_vote_with_old_token(self):
-        """D-04: CombinedJWTAuthentication не проверяет Student.is_active.
+    def test_deactivated_student_cannot_vote(self):
+        """D-04 исправлен на этапе 3.
 
-        Деактивированный студент с ранее выданным токеном продолжает голосовать.
-        Фиксируется как факт; проверка is_active и механизм revoke (auth_version)
-        добавляются на этапе 3.
+        Раньше CombinedJWTAuthentication не проверял is_active, и деактивированный
+        студент голосовал всю неделю жизни токена. Теперь деактивация поднимает
+        auth_version и немедленно обесценивает выданные токены.
         """
         self.student.is_active = False
         self.student.save(update_fields=["is_active"])
         res = self._cast()
-        self.assertEqual(res.status_code, 200)
-        self.assertEqual(VoteRecord.objects.count(), 1)
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(VoteRecord.objects.count(), 0)
 
     def test_failed_vote_leaves_no_partial_records(self):
         """Отклонённая попытка не должна оставлять ни VoteRecord, ни Ballot."""

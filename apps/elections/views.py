@@ -381,21 +381,25 @@ class StudentAvailableElectionsView(APIView):
     permission_classes = [IsStudentAuthenticated]
 
     def get(self, request):
-        student = request.user.student
+        # Принципал вместо полной модели: экономит SELECT на горячем endpoint'е
+        student_id = request.user.id
+        university_id = request.user.university_id
         now = timezone.now()
 
         # Find elections where student has voted
-        voted_election_ids = set(VoteRecord.objects.filter(student=student).values_list('election_id', flat=True))
+        voted_election_ids = set(
+            VoteRecord.objects.filter(student_id=student_id).values_list('election_id', flat=True)
+        )
 
         include_all = request.query_params.get('all', 'false').lower() == 'true'
 
         if include_all:
             elections = Election.objects.filter(
-                university=student.university
+                university_id=university_id
             ).exclude(status=Election.Status.DRAFT).order_by('-created_at')
         else:
             elections = Election.objects.filter(
-                university=student.university,
+                university_id=university_id,
                 status=Election.Status.ACTIVE,
                 starts_at__lte=now,
                 ends_at__gte=now
@@ -425,11 +429,14 @@ class StudentElectionDetailView(APIView):
         data = serializer.data
 
         # If student is authenticated, check if student belongs to this uni and whether they voted
-        student = getattr(request.user, 'student', None) if hasattr(request.user, 'student') else None
-        if student:
-            has_voted = VoteRecord.objects.filter(election=election, student=student).exists()
+        # Только идентификаторы — без загрузки полной модели студента
+        is_student = getattr(request.user, 'is_student', False)
+        if is_student:
+            has_voted = VoteRecord.objects.filter(
+                election=election, student_id=request.user.id
+            ).exists()
             data['has_voted'] = has_voted
-            data['is_eligible'] = (student.university_id == election.university_id)
+            data['is_eligible'] = (str(request.user.university_id) == str(election.university_id))
         else:
             data['has_voted'] = False
             data['is_eligible'] = None

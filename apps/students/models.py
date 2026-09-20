@@ -73,15 +73,50 @@ class Student(TimeStampedUUIDModel):
         verbose_name="Пакет загрузки"
     )
     is_active = models.BooleanField(default=True, verbose_name="Активен")
+    auth_version = models.PositiveIntegerField(
+        default=1,
+        verbose_name="Версия аутентификации",
+        help_text=(
+            "Увеличивается при деактивации, смене пароля и security reset. "
+            "Токен с устаревшей версией немедленно перестаёт действовать. "
+            "Стартует с 1, чтобы отличать «версия есть» от «claim отсутствует»."
+        ),
+    )
 
     class Meta:
         verbose_name = "Студент"
         verbose_name_plural = "Студенты"
         ordering = ['full_name']
 
+    # Поля, изменение которых обязано немедленно обесценить выданные токены.
+    SECURITY_SENSITIVE_FIELDS = ('is_active', 'password')
+
     def save(self, *args, **kwargs):
         if not self.student_id:
             self.student_id = f"STU-{uuid.uuid4().hex[:8].upper()}"
+
+        # Отзыв токенов при деактивации и смене пароля (ТЗ п.19).
+        #
+        # Это сделано здесь, а не в сигнале pre_save, по конкретной причине:
+        # сигнал не может расширить update_fields вызывающего save(), поэтому
+        # при save(update_fields=['is_active']) новая версия просто не попала бы
+        # в UPDATE, и отзыв молча не сработал бы.
+        #
+        # Не покрывает queryset.update() и bulk_update() — они не вызывают save().
+        # Для массовых операций есть services_auth.revoke_student_tokens().
+        if self.pk is not None:
+            previous = type(self).objects.filter(pk=self.pk).only(
+                'is_active', 'password', 'auth_version'
+            ).first()
+            if previous is not None:
+                deactivated = previous.is_active and not self.is_active
+                password_changed = previous.password != self.password
+                if deactivated or password_changed:
+                    self.auth_version = previous.auth_version + 1
+                    update_fields = kwargs.get('update_fields')
+                    if update_fields is not None:
+                        kwargs['update_fields'] = set(update_fields) | {'auth_version'}
+
         super().save(*args, **kwargs)
 
     def __str__(self):
