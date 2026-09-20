@@ -248,8 +248,51 @@ if extra_csrf:
 
 X_FRAME_OPTIONS = 'ALLOWALL'
 
-# Celery & Redis
+# ==============================================================================
+# REDIS И КЭШ (ТЗ п.20, 23, 95)
+# ==============================================================================
 TESTING = 'test' in sys.argv
+
+REDIS_URL = os.getenv('REDIS_URL', '')
+# Таймауты намеренно короткие: при недоступном Redis мы просто идём в PostgreSQL,
+# и ждать его секундами недопустимо — один зависший кэш занял бы воркер (ТЗ п.95).
+REDIS_CONNECT_TIMEOUT = float(os.getenv('REDIS_CONNECT_TIMEOUT', '0.2'))
+REDIS_SOCKET_TIMEOUT = float(os.getenv('REDIS_SOCKET_TIMEOUT', '0.2'))
+
+# Время жизни личности студента в кэше. Отзыв токена работает не по истечении
+# TTL, а через явную инвалидацию (apps/students/signals.py); TTL — вторая
+# линия защиты на случай, если инвалидация не дошла (ТЗ п.24).
+AUTH_PRINCIPAL_CACHE_TTL = int(os.getenv('AUTH_PRINCIPAL_CACHE_TTL', '900'))
+
+if REDIS_URL and not TESTING:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+            'LOCATION': REDIS_URL,
+            'OPTIONS': {
+                'socket_connect_timeout': REDIS_CONNECT_TIMEOUT,
+                'socket_timeout': REDIS_SOCKET_TIMEOUT,
+            },
+        }
+    }
+else:
+    # Без REDIS_URL и под тестами — локальная память: прогон не должен
+    # требовать живого Redis, иначе тесты станут флаки.
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'voteplatform-locmem',
+        }
+    }
+
+# Токены, выпущенные до появления claim auth_version, должны продолжать
+# работать, пока не истечёт их срок (7 дней). Выключать только после того,
+# как migration period заведомо закончился.
+STUDENT_TOKEN_ALLOW_MISSING_AUTH_VERSION = os.getenv(
+    'STUDENT_TOKEN_ALLOW_MISSING_AUTH_VERSION', 'True'
+).lower() == 'true'
+
+# Celery & Redis
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://127.0.0.1:6379/0')
 CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://127.0.0.1:6379/0')
 CELERY_ACCEPT_CONTENT = ['json']
