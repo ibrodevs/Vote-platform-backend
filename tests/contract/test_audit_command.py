@@ -148,6 +148,12 @@ class AuditInvalidWindowTest(TransactionTestCase):
         """
         from django.db import connection
 
+        if connection.vendor != "postgresql":
+            self.skipTest(
+                "снятие CHECK-констрейнта на SQLite требует перестроения таблицы, "
+                "которое schema_editor вне миграции не делает; целевая СУБД — PostgreSQL"
+            )
+
         constraint = next(
             c for c in Election._meta.constraints
             if c.name == "election_starts_before_ends"
