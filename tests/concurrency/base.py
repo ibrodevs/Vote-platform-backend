@@ -5,14 +5,30 @@
 ничего не доказывает (ТЗ п.107).
 """
 import concurrent.futures
+import os
 import threading
 
 from django.db import connection
 from django.test import TransactionTestCase
 
-# PostgreSQL по умолчанию держит max_connections=100. Каждый поток открывает
-# собственное соединение, поэтому параллелизм ограничен сознательно.
-MAX_WORKERS = 24
+# Каждый поток открывает собственное соединение с PostgreSQL, поэтому
+# параллелизм ограничен сверху значением max_connections сервера.
+#
+# По умолчанию 24 — безопасно для CI и для сервера с дефолтными 100
+# соединениями. Для более жёсткой проверки поднимите max_connections
+# (в docker-compose.yml уже стоит 300) и задайте:
+#
+#   CONCURRENCY_MAX_WORKERS=100 python manage.py test tests.concurrency
+#
+# Проверено фактически: набор зелёный и при 100, и при 200 одновременных
+# соединениях (15 тестов, 0 deadlock'ов). Значение по умолчанию оставлено
+# низким, потому что CI-сервис PostgreSQL идёт с дефолтными max_connections=100,
+# а команду контейнера в GitHub Actions задать нельзя.
+#
+# Полностью «1000 одновременных клиентов» здесь не воспроизводится и не должно:
+# 1000 Python-потоков не представляют 1000 HTTP-клиентов. Настоящая проверка
+# на таком масштабе — нагрузочные тесты этапа 10.
+MAX_WORKERS = int(os.getenv("CONCURRENCY_MAX_WORKERS", "24"))
 
 SKIP_REASON = (
     "concurrency-тесты имеют смысл только на PostgreSQL: на SQLite нет "

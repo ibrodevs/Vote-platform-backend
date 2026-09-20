@@ -15,6 +15,10 @@
 services:
   postgres:
     image: postgres:16-alpine
+    # max_connections поднят ради concurrency-тестов: каждый поток открывает
+    # собственное соединение, и на дефолтных 100 параллелизм упирается
+    # в базу раньше, чем в проверяемую логику.
+    command: ["postgres", "-c", "max_connections=300"]
     environment:
       POSTGRES_DB: ${DB_NAME:-vote_db}
       POSTGRES_USER: ${DB_USER:-vote_user}
