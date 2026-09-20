@@ -27,7 +27,8 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH" \
-    DJANGO_ENV=production
+    DJANGO_ENV=production \
+    PROMETHEUS_MULTIPROC_DIR=/dev/shm/prometheus
 
 WORKDIR /app
 

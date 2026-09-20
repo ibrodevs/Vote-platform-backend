@@ -6,6 +6,7 @@ from django.views.static import serve
 from django.http import JsonResponse
 
 from apps.core import health as core_health
+from apps.core.views_metrics import metrics_view
 
 def api_root(request):
     return JsonResponse({
@@ -34,6 +35,8 @@ urlpatterns = [
     # ТЗ п.43. Существующий /api/health/ сохранён для совместимости.
     path('health/live', core_health.liveness, name='health-live'),
     path('health/ready', core_health.readiness, name='health-ready'),
+    # Наружу не выставляется: ограничивается токеном и сетью на Nginx
+    path('metrics', metrics_view, name='metrics'),
 
     # Django Admin (ТЗ п.98). Путь задаётся окружением: стандартный адрес
     # находят автоматические сканеры за минуты. Это не защита сама по себе,

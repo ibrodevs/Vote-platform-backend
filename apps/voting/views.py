@@ -4,6 +4,7 @@ from rest_framework import status
 from apps.core.cache import safe_get, safe_set
 from apps.core.cache_keys import student_vote_status
 from apps.core.cache_policy import CachePolicy
+from apps.core import metrics
 from apps.core.permissions import IsStudentAuthenticated
 from apps.core.throttling import StudentActionThrottle, VoteThrottle
 from .serializers import CastVoteSerializer, VoteStatusSerializer
@@ -28,11 +29,16 @@ class CastVoteView(APIView):
 
         try:
             cast_secret_ballot(voter, election_id, candidate_id)
+            # Метка — только выборы и исход. Ни студента, ни кандидата:
+            # счётчик по кандидату, растущий синхронно с записью об участии,
+            # восстановил бы выбор студента (ТЗ п.63).
+            metrics.record_vote_attempt(election_id, 'accepted')
             return Response({
                 "success": True,
                 "message": "Ваш голос успешно и анонимно принят"
             }, status=status.HTTP_200_OK)
         except VotingError as e:
+            metrics.record_vote_attempt(election_id, e.code)
             return Response({
                 "error": {
                     "code": e.code,

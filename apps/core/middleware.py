@@ -1,7 +1,12 @@
-"""Middleware приложения: идентификатор запроса и заголовки кэширования."""
+"""Middleware приложения: идентификатор запроса, метрики, заголовки кэширования."""
+import logging
+import time
 import uuid
 
+from apps.core import metrics
 from apps.core.cache_policy import PRIVATE_NO_STORE, PUBLIC_SHORT
+
+access_logger = logging.getLogger('apps.core.access')
 
 REQUEST_ID_HEADER = 'X-Request-ID'
 
@@ -92,3 +97,61 @@ class CacheControlMiddleware:
             return PUBLIC_SHORT
 
         return PRIVATE_NO_STORE
+
+
+class ObservabilityMiddleware:
+    """Логирование запросов и метрики (ТЗ п.61, 62).
+
+    МЕТКОЙ ИДЁТ ШАБЛОН МАРШРУТА, А НЕ ПУТЬ
+    ---------------------------------------
+    `/api/v1/elections/<uuid:pk>/`, а не `/api/v1/elections/3f2a.../`.
+    Путь с подставленным идентификатором порождал бы отдельный временной
+    ряд на каждые выборы и каждого кандидата — Prometheus не пережил бы
+    и суток.
+
+    Тело запроса и заголовки не пишутся ни при каких условиях:
+    в Authorization токен, в теле POST /vote — выбор студента (ТЗ п.4).
+    """
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        started = time.perf_counter()
+        metrics.http_requests_in_progress.inc()
+        try:
+            response = self.get_response(request)
+        finally:
+            metrics.http_requests_in_progress.dec()
+
+        duration = time.perf_counter() - started
+        route = self._route_of(request)
+        status_code = getattr(response, 'status_code', 0)
+
+        metrics.http_requests_total.labels(
+            method=request.method, route=route, status=str(status_code)
+        ).inc()
+        metrics.http_request_duration_seconds.labels(
+            method=request.method, route=route
+        ).observe(duration)
+
+        access_logger.info(
+            'request',
+            extra={
+                'request_id': getattr(request, 'request_id', None),
+                'method': request.method,
+                'route': route,
+                'status': status_code,
+                'duration_ms': round(duration * 1000, 2),
+            },
+        )
+        return response
+
+    @staticmethod
+    def _route_of(request) -> str:
+        match = getattr(request, 'resolver_match', None)
+        if match is not None and getattr(match, 'route', None):
+            return '/' + match.route.lstrip('/')
+        # Маршрут не разрешился (404). Возвращается константа, а не путь:
+        # иначе любой сканер, перебирающий адреса, раздул бы кардинальность.
+        return '<unmatched>'

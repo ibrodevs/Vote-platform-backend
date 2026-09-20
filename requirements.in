@@ -17,6 +17,7 @@ redis>=5.0
 pillow>=11.0
 gunicorn>=23.0            # ТЗ п.37: production application server вместо runserver
 django-storages[s3]>=1.14 # ТЗ п.31: вынос медиа в object storage
+prometheus-client>=0.21   # ТЗ п.62: метрики
 whitenoise>=6.6
 python-dotenv>=1.0
 PyJWT>=2.9

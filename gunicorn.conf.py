@@ -80,8 +80,49 @@ preload_app = os.getenv('GUNICORN_PRELOAD', 'True').lower() == 'true'
 worker_tmp_dir = os.getenv('GUNICORN_WORKER_TMP_DIR', '/dev/shm')
 
 
+# ==============================================================================
+# МЕТРИКИ В МНОГОПРОЦЕССНОМ РЕЖИМЕ (ТЗ п.62)
+# ==============================================================================
+# У каждого воркера свой реестр в памяти. Без общей директории скрейп
+# попадает в один случайный воркер и показывает его долю — при четырёх
+# воркерах примерно четверть реального трафика. Ошибка тихая: цифры
+# выглядят правдоподобно.
+_METRICS_DIR = os.getenv('PROMETHEUS_MULTIPROC_DIR', '/dev/shm/prometheus')
+
+
 def on_starting(server):
+    """Чистит метрики предыдущего запуска.
+
+    Саму директорию создаёт apps/core/metrics.py при импорте: под
+    preload_app приложение импортируется раньше этого хука, и полагаться
+    на него нельзя.
+
+    Файлы от прошлого запуска содержат счётчики умерших процессов
+    и дали бы двойной учёт после рестарта.
+    """
+    import glob
+
+    os.environ.setdefault('PROMETHEUS_MULTIPROC_DIR', _METRICS_DIR)
+    os.makedirs(_METRICS_DIR, exist_ok=True)
+    for stale in glob.glob(os.path.join(_METRICS_DIR, '*.db')):
+        try:
+            os.unlink(stale)
+        except OSError:
+            pass
     server.log.info("Запуск: воркеров=%s потоков=%s класс=%s", workers, threads, worker_class)
+
+
+def child_exit(server, worker):
+    """Убирает файлы метрик завершившегося воркера.
+
+    Без этого при max_requests счётчики перезапущенных воркеров копились бы
+    вечно, и /metrics рос бы неограниченно.
+    """
+    try:
+        from prometheus_client import multiprocess
+        multiprocess.mark_process_dead(worker.pid)
+    except Exception:  # метрики не должны мешать остановке воркера
+        pass
 
 
 def worker_int(worker):

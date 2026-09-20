@@ -81,6 +81,8 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     # Первым: идентификатор нужен всем последующим слоям и обработчику ошибок
     'apps.core.middleware.RequestIDMiddleware',
+    # Сразу после RequestID: измеряет полное время, включая все слои ниже
+    'apps.core.middleware.ObservabilityMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
@@ -262,6 +264,53 @@ REST_FRAMEWORK = {
 # за минуты; вынос на нестандартный путь убирает админку из общего шума.
 # Настоящее ограничение доступа (VPN, allowlist по IP) — на уровне Nginx.
 DJANGO_ADMIN_PATH = os.getenv('DJANGO_ADMIN_PATH', 'admin-django').strip('/')
+
+# ==============================================================================
+# ЛОГИРОВАНИЕ (ТЗ п.61)
+# ==============================================================================
+# JSON в production: при нескольких репликах и десятках тысяч запросов
+# текстовые строки разбирать невозможно. В разработке — читаемый текст.
+LOG_FORMAT = os.getenv('LOG_FORMAT', 'json' if IS_PRODUCTION else 'plain')
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'filters': {
+        # Последний рубеж: вырезает секреты, даже если их попробуют залогировать
+        'sensitive': {'()': 'apps.core.logging.SensitiveDataFilter'},
+    },
+    'formatters': {
+        'json': {'()': 'apps.core.logging.JSONFormatter'},
+        'plain': {
+            'format': '%(asctime)s %(levelname)s %(name)s %(message)s',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': LOG_FORMAT,
+            'filters': ['sensitive'],
+        },
+    },
+    'root': {'handlers': ['console'], 'level': LOG_LEVEL},
+    'loggers': {
+        'django.request': {'handlers': ['console'], 'level': 'ERROR', 'propagate': False},
+        # Доступ логируется структурно нашим middleware; сервер приложений
+        # свой access-лог тоже пишет, но без заголовков и тела
+        'apps.core.access': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
+        'apps.voting': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
+        'apps.core.errors': {'handlers': ['console'], 'level': 'ERROR', 'propagate': False},
+    },
+}
+
+# ==============================================================================
+# МЕТРИКИ (ТЗ п.62)
+# ==============================================================================
+# /metrics раскрывает внутреннее устройство и объёмы, поэтому наружу
+# не выставляется: доступ ограничивается токеном или сетью на уровне Nginx.
+METRICS_ENABLED = os.getenv('METRICS_ENABLED', 'True').lower() == 'true'
+METRICS_TOKEN = os.getenv('METRICS_TOKEN', '')
 
 # ==============================================================================
 # ОГРАНИЧЕНИЕ ЧАСТОТЫ ЗАПРОСОВ (ТЗ п.36)

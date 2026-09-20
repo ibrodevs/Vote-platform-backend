@@ -158,6 +158,8 @@ python manage.py explain_hot_queries --only "login"
 | [docs/FRONTEND_USAGE.md](docs/FRONTEND_USAGE.md) | какие вызовы делает фронтенд и что он ожидает |
 | [docs/BASELINE.md](docs/BASELINE.md) | состояние тестов и реестр известных дефектов |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | измеренные бюджеты запросов и планы EXPLAIN |
+| [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md) | логи, метрики и правила приватности телеметрии |
+| [docs/DEPLOY_PRODUCTION.md](docs/DEPLOY_PRODUCTION.md) | топология, развёртывание, откат |
 | [docs/SQLITE_TO_POSTGRES.md](docs/SQLITE_TO_POSTGRES.md) | процедура переноса базы и отката |
 | [docs/superpowers/plans/](docs/superpowers/plans/) | план high-load оптимизации по этапам |
 
@@ -170,7 +172,8 @@ python manage.py explain_hot_queries --only "login"
 
 Выполнено: этап 0 (фиксация API-контракта), этап 1 (PostgreSQL и окружение),
 этап 2 (корректность и конкуррентность голосования), этап 3 (аутентификация),
-этап 4 (устранение N+1), этап 5 (индексы), этап 6 (кэширование).
+этап 4 (устранение N+1), этап 5 (индексы), этап 6 (кэширование),
+этап 7 (production runtime), этап 8 (безопасность), этап 9 (наблюдаемость).
 
 Характеристики производительности **не измерялись**. Никаких заявлений о
 пропускной способности здесь не будет, пока не появятся результаты нагрузочных
