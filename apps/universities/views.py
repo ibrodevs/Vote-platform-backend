@@ -4,6 +4,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from .models import University
 from .serializers import UniversitySerializer, UniversityPublicSerializer
+from apps.core.cache_invalidation import invalidate_university
 from apps.core.permissions import IsSuperAdmin, IsAdminUserWithRole, IsNotObserver
 from apps.accounts.models import AdminActionLog
 
@@ -67,6 +68,7 @@ class UniversityAdminDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def perform_update(self, serializer):
         uni = serializer.save()
+        invalidate_university(uni.id)
         AdminActionLog.objects.create(
             admin=self.request.user,
             action="update_university",

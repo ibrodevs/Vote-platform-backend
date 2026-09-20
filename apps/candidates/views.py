@@ -5,6 +5,7 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from .models import Candidate
 from .serializers import CandidateSerializer, CandidatePublicSerializer, CandidateReorderSerializer
 from apps.elections.models import Election
+from apps.core.cache_invalidation import invalidate_candidate, invalidate_election
 from apps.core.permissions import IsAdminUserWithRole, IsStudentAuthenticated, IsNotObserver
 from apps.accounts.models import AdminActionLog
 
@@ -36,6 +37,7 @@ class AdminElectionCandidatesListView(generics.ListCreateAPIView):
         election_id = self.kwargs.get('election_id')
         election = Election.objects.get(id=election_id)
         candidate = serializer.save(election=election, university=election.university)
+        invalidate_candidate(candidate)
         AdminActionLog.objects.create(
             admin=self.request.user,
             action="create_candidate",
@@ -53,6 +55,7 @@ class AdminCandidateDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def perform_update(self, serializer):
         candidate = serializer.save()
+        invalidate_candidate(candidate)
         AdminActionLog.objects.create(
             admin=self.request.user,
             action="update_candidate",
@@ -63,6 +66,7 @@ class AdminCandidateDetailView(generics.RetrieveUpdateDestroyAPIView):
         )
 
     def perform_destroy(self, instance):
+        invalidate_candidate(instance)
         AdminActionLog.objects.create(
             admin=self.request.user,
             action="delete_candidate",
@@ -83,6 +87,7 @@ class AdminCandidateReorderView(APIView):
 
         for index, candidate_id in enumerate(ordered_ids):
             Candidate.objects.filter(id=candidate_id, election_id=election_id).update(order=index)
+        invalidate_election(election_id)
 
         return Response({"success": True, "message": "Порядок кандидатов обновлен"}, status=status.HTTP_200_OK)
 

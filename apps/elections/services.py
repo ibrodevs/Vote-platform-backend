@@ -26,6 +26,7 @@
 """
 from django.db import transaction
 
+from apps.core.cache_invalidation import invalidate_election
 from apps.core.db_locks import election_state_lock
 
 from .models import Election
@@ -66,6 +67,8 @@ def start_election(election: Election) -> Election:
 
         election.status = Election.Status.ACTIVE
         election.save(update_fields=["status"])
+        # Смена состояния меняет и публичные данные, и видимость результатов
+        transaction.on_commit(lambda: invalidate_election(election.id))
         return election
 
 
@@ -85,6 +88,8 @@ def finish_election(election: Election) -> Election:
 
         election.status = Election.Status.FINISHED
         election.save(update_fields=["status"])
+        # Смена состояния меняет и публичные данные, и видимость результатов
+        transaction.on_commit(lambda: invalidate_election(election.id))
         return election
 
 
@@ -101,6 +106,8 @@ def cancel_election(election: Election) -> Election:
 
         election.status = Election.Status.CANCELLED
         election.save(update_fields=["status"])
+        # Смена состояния меняет и публичные данные, и видимость результатов
+        transaction.on_commit(lambda: invalidate_election(election.id))
         return election
 
 
@@ -118,4 +125,6 @@ def delete_election(election: Election) -> None:
                 "Невозможно удалить активные выборы. Сначала отмените или завершите их.",
                 code="active_election",
             )
+        election_id = election.id
         election.delete()
+        transaction.on_commit(lambda: invalidate_election(election_id))

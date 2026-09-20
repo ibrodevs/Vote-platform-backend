@@ -16,7 +16,9 @@ from rest_framework.filters import OrderingFilter
 from apps.core.filters import MinLengthSearchFilter
 
 from .models import Election
-from .aggregates import election_results, eligible_voters_count, results_are_visible
+from apps.core.cache_invalidation import invalidate_election
+
+from .aggregates import election_results, election_turnout, eligible_voters_count, results_are_visible
 from .services import (
     ElectionStateError,
     cancel_election,
@@ -109,6 +111,7 @@ class AdminElectionDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def perform_update(self, serializer):
         election = serializer.save()
+        invalidate_election(election.id)
         AdminActionLog.objects.create(
             admin=self.request.user,
             action="update_election",
@@ -238,9 +241,7 @@ class AdminElectionTurnoutView(APIView):
             if election.university_id != request.user.university_id:
                 return Response({"error": {"code": "forbidden", "message": "Доступ ограничен вашим университетом"}}, status=status.HTTP_403_FORBIDDEN)
 
-        total_eligible = eligible_voters_count(election)
-        total_voted = VoteRecord.objects.filter(election=election).count()
-        turnout_percent = round((total_voted / total_eligible * 100), 2) if total_eligible > 0 else 0.0
+        turnout = election_turnout(election)
 
         return Response({
             "election_id": str(election.id),
@@ -248,9 +249,9 @@ class AdminElectionTurnoutView(APIView):
             "status": election.status,
             "starts_at": election.starts_at,
             "ends_at": election.ends_at,
-            "total_eligible": total_eligible,
-            "total_voted": total_voted,
-            "turnout_percent": turnout_percent,
+            "total_eligible": turnout["total_eligible"],
+            "total_voted": turnout["total_voted"],
+            "turnout_percent": turnout["turnout_percent"],
         }, status=status.HTTP_200_OK)
 
 class AdminElectionResultsView(APIView):
@@ -517,6 +518,7 @@ class AdminFeaturedElectionsManageView(APIView):
             election.cover_image_url = request.data.get('cover_image_url', '')
 
         election.save()
+        invalidate_election(election.id)
 
         AdminActionLog.objects.create(
             admin=request.user,

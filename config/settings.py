@@ -52,6 +52,9 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    # ТЗ п.60, 96: приватные ответы не должны попадать в общий кэш.
+    # По умолчанию private/no-store, публичным быть надо заслужить.
+    'apps.core.middleware.CacheControlMiddleware',
 ]
 
 ROOT_URLCONF = 'config.urls'

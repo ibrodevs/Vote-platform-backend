@@ -45,10 +45,30 @@ def student_vote_status(student_id, election_id) -> str:
 
 
 def election_public(election_id) -> str:
-    """Публичные данные выборов. Заготовка для этапа 6."""
+    """Публичные данные выборов."""
     return f"{NAMESPACE}:election:{_normalize(election_id)}:public"
 
 
 def university(university_id) -> str:
-    """Данные университета. Заготовка для этапа 6."""
+    """Данные университета."""
     return f"{NAMESPACE}:university:{_normalize(university_id)}"
+
+
+def election_turnout(election_id) -> str:
+    """Явка идущих выборов.
+
+    Ключ отдельный от результатов намеренно (ТЗ п.51): явка показывается
+    всегда, а результаты — только после завершения. Общий ключ сделал бы
+    кэш явки каналом утечки результатов.
+    """
+    return f"{NAMESPACE}:election:{_normalize(election_id)}:turnout"
+
+
+def election_results(election_id) -> str:
+    """Итоги ЗАВЕРШЁННЫХ выборов. Незавершённые не кэшируются."""
+    return f"{NAMESPACE}:election:{_normalize(election_id)}:results"
+
+
+def election_namespace_prefix(election_id) -> str:
+    """Префикс всех ключей выборов — для инвалидации скопом."""
+    return f"{NAMESPACE}:election:{_normalize(election_id)}:"

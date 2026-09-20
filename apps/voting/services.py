@@ -36,6 +36,9 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from apps.candidates.models import Candidate
+from apps.core.cache import safe_set
+from apps.core.cache_keys import student_vote_status
+from apps.core.cache_policy import CachePolicy
 from apps.core.db_locks import election_vote_lock
 from apps.elections.models import Election
 
@@ -149,7 +152,9 @@ def cast_secret_ballot(student, election_id: str, candidate_id: str) -> bool:
         # с InFailedSqlTransaction (ТЗ п.10).
         try:
             with transaction.atomic():
-                VoteRecord.objects.create(election_id=election.id, student_id=student.id)
+                record = VoteRecord.objects.create(
+                    election_id=election.id, student_id=student.id
+                )
         except IntegrityError as exc:
             if _is_duplicate_vote(exc):
                 # Ballot здесь принципиально не создаётся: дубликат не должен
@@ -158,6 +163,25 @@ def cast_secret_ballot(student, election_id: str, candidate_id: str) -> bool:
             raise
 
         Ballot.objects.create(election_id=election.id, candidate_id=candidate_id)
+
+        # Положительный факт участия ставится в кэш ТОЛЬКО после COMMIT.
+        # Поставить его раньше значило бы показать студенту «вы проголосовали»
+        # при транзакции, которая потом откатилась (ТЗ п.21).
+        #
+        # Кэшируется только положительный факт: он необратим. Отрицательный
+        # («ещё не голосовал») не кэшируется вовсе — устаревшее «нет» после
+        # успешного голоса показало бы кнопку голосования повторно.
+        # Кэшируется сама метка времени, а не флаг: ответ endpoint'а содержит
+        # voted_at, и вернуть его пустым при попадании в кэш значило бы отдавать
+        # разные данные в зависимости от состояния Redis.
+        voted_at = record.voted_at
+        transaction.on_commit(
+            lambda: safe_set(
+                student_vote_status(student.id, election.id),
+                voted_at,
+                timeout=CachePolicy.VOTE_STATUS_POSITIVE,
+            )
+        )
 
     # Логируется ПОСЛЕ коммита и без пары student+candidate: связка этих двух
     # идентификаторов в логах восстанавливает выбор студента (ТЗ п.4).

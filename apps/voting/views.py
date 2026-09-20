@@ -1,6 +1,9 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from apps.core.cache import safe_get, safe_set
+from apps.core.cache_keys import student_vote_status
+from apps.core.cache_policy import CachePolicy
 from apps.core.permissions import IsStudentAuthenticated
 from .serializers import CastVoteSerializer, VoteStatusSerializer
 from .services import cast_secret_ballot, VotingError
@@ -37,10 +40,28 @@ class VoteStatusView(APIView):
     permission_classes = [IsStudentAuthenticated]
 
     def get(self, request, election_id):
-        # Достаточно идентификатора — полная модель студента здесь не нужна
+        # Положительный кэш (ТЗ п.21): факт участия необратим, поэтому
+        # закэшированное «да» устареть не может. Отрицательного кэша нет —
+        # см. обоснование в apps/core/cache_policy.py.
+        cache_key = student_vote_status(request.user.id, election_id)
+        cached = safe_get(cache_key)
+        if cached is not None:
+            # В кэше лежит метка времени голоса — ответ обязан совпадать
+            # с тем, что вернулось бы из базы.
+            return Response({
+                "has_voted": True,
+                "voted_at": cached,
+            }, status=status.HTTP_200_OK)
+
         record = VoteRecord.objects.filter(
             election_id=election_id, student_id=request.user.id
         ).first()
+
+        if record is not None:
+            # Промах при существующей записи: восстанавливаем кэш.
+            # Так он самовосстанавливается после очистки Redis.
+            safe_set(cache_key, record.voted_at, timeout=CachePolicy.VOTE_STATUS_POSITIVE)
+
         return Response({
             "has_voted": bool(record),
             "voted_at": record.voted_at if record else None
