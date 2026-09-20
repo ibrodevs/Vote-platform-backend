@@ -10,11 +10,43 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Load environment variables from .env if present
 load_dotenv(BASE_DIR / '.env')
 
-SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'vote-platform-secret-key-34e8bb-midnight-011c42')
-DEBUG = os.getenv('DJANGO_DEBUG', 'True').lower() == 'true'
+# DJANGO_ENV объявлен раньше остальных настроек: от него зависят значения
+# по умолчанию. Без него поведение остаётся прежним — живой деплой не ломается.
+DJANGO_ENV = os.getenv('DJANGO_ENV', 'development').strip().lower()
+IS_PRODUCTION = DJANGO_ENV == 'production'
 
-# Open to all hostnames by default for PythonAnywhere & multi-domain deployment
-ALLOWED_HOSTS = ['*']
+# Ключ из репозитория оставлен как fallback ТОЛЬКО для разработки.
+# В production его отсутствие валит старт: этим ключом подписываются
+# студенческие JWT, и знание ключа позволяет выпустить токен любого
+# студента (ТЗ п.32, 33).
+_DEV_SECRET_KEY = 'vote-platform-secret-key-34e8bb-midnight-011c42'
+SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', '' if IS_PRODUCTION else _DEV_SECRET_KEY)
+if IS_PRODUCTION and not SECRET_KEY:
+    raise ImproperlyConfigured(
+        'DJANGO_SECRET_KEY обязателен в production. '
+        'Сгенерируйте: python -c "import secrets; print(secrets.token_urlsafe(64))"'
+    )
+
+DEBUG = os.getenv('DJANGO_DEBUG', 'False' if IS_PRODUCTION else 'True').lower() == 'true'
+if IS_PRODUCTION and DEBUG:
+    raise ImproperlyConfigured(
+        'DJANGO_DEBUG=True недопустим в production: Django отдаёт трейсбеки '
+        'со значениями переменных, включая секреты и токены.'
+    )
+
+
+def _env_list(name, default=''):
+    return [item.strip() for item in os.getenv(name, default).split(',') if item.strip()]
+
+
+# ALLOWED_HOSTS: в production wildcard запрещён — он открывает
+# Host header injection (ТЗ п.32).
+ALLOWED_HOSTS = _env_list('DJANGO_ALLOWED_HOSTS') or (['*'] if not IS_PRODUCTION else [])
+if IS_PRODUCTION:
+    if not ALLOWED_HOSTS:
+        raise ImproperlyConfigured('DJANGO_ALLOWED_HOSTS обязателен в production.')
+    if '*' in ALLOWED_HOSTS:
+        raise ImproperlyConfigured('ALLOWED_HOSTS не может содержать "*" в production.')
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -43,6 +75,8 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    # Первым: идентификатор нужен всем последующим слоям и обработчику ошибок
+    'apps.core.middleware.RequestIDMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
@@ -81,11 +115,6 @@ ASGI_APPLICATION = 'config.asgi.application'
 # ==============================================================================
 # DATABASE (ТЗ п.12, 13, 102)
 # ==============================================================================
-# DJANGO_ENV — явный маркер окружения. По умолчанию 'development', поэтому
-# поведение существующих деплоев, которые эту переменную не задают, не меняется.
-DJANGO_ENV = os.getenv('DJANGO_ENV', 'development').strip().lower()
-IS_PRODUCTION = DJANGO_ENV == 'production'
-
 # В production поддерживается только PostgreSQL. SQLite и MySQL остаются
 # доступными для локальной разработки, но в production приложение обязано
 # падать на старте, а не молча работать на непригодной базе.
@@ -206,8 +235,16 @@ SIMPLE_JWT = {
     'AUTH_HEADER_TYPES': ('Bearer',),
 }
 
-# CORS - Open to all clients (Web, Mobile, Postman, Vercel, PythonAnywhere, Localhost)
-CORS_ALLOW_ALL_ORIGINS = True
+# CORS (ТЗ п.32). Открытый CORS вместе с ALLOW_CREDENTIALS позволяет любому
+# сайту делать запросы от имени залогиненного студента — в системе
+# голосования это недопустимо.
+CORS_ALLOWED_ORIGINS = _env_list('DJANGO_CORS_ALLOWED_ORIGINS')
+CORS_ALLOW_ALL_ORIGINS = not IS_PRODUCTION and not CORS_ALLOWED_ORIGINS
+if IS_PRODUCTION and not CORS_ALLOWED_ORIGINS:
+    raise ImproperlyConfigured(
+        'DJANGO_CORS_ALLOWED_ORIGINS обязателен в production: '
+        'без него фронтенд не сможет обратиться к API.'
+    )
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_PRIVATE_NETWORK = True
 CORS_ALLOW_METHODS = [
@@ -249,11 +286,44 @@ CSRF_TRUSTED_ORIGINS = [
     'http://localhost:8000',
     'http://127.0.0.1:8000',
 ]
-extra_csrf = os.getenv('DJANGO_CSRF_TRUSTED_ORIGINS', '')
+extra_csrf = _env_list('DJANGO_CSRF_TRUSTED_ORIGINS')
 if extra_csrf:
-    CSRF_TRUSTED_ORIGINS.extend([origin.strip() for origin in extra_csrf.split(',') if origin.strip()])
+    CSRF_TRUSTED_ORIGINS.extend(extra_csrf)
+if IS_PRODUCTION:
+    # В production доверяются только явно перечисленные origin'ы:
+    # список для разработки содержит wildcard-домены хостингов.
+    CSRF_TRUSTED_ORIGINS = extra_csrf or list(CORS_ALLOWED_ORIGINS)
 
-X_FRAME_OPTIONS = 'ALLOWALL'
+# ==============================================================================
+# БЕЗОПАСНОСТЬ ТРАНСПОРТА И ЗАГОЛОВКИ (ТЗ п.32, 97)
+# ==============================================================================
+# ALLOWALL позволял встроить интерфейс голосования в iframe на чужом сайте
+# и провести clickjacking. В production — DENY.
+X_FRAME_OPTIONS = 'DENY' if IS_PRODUCTION else 'SAMEORIGIN'
+
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
+
+SESSION_COOKIE_SECURE = IS_PRODUCTION
+CSRF_COOKIE_SECURE = IS_PRODUCTION
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = 'Lax'
+CSRF_COOKIE_SAMESITE = 'Lax'
+
+# HSTS включается отдельной переменной: выставить его случайно на домене
+# без валидного TLS — значит сделать сайт недоступным на месяцы.
+SECURE_SSL_REDIRECT = IS_PRODUCTION and os.getenv('DJANGO_SSL_REDIRECT', 'True').lower() == 'true'
+SECURE_HSTS_SECONDS = int(os.getenv('DJANGO_HSTS_SECONDS', '0'))
+SECURE_HSTS_INCLUDE_SUBDOMAINS = os.getenv('DJANGO_HSTS_SUBDOMAINS', 'False').lower() == 'true'
+SECURE_HSTS_PRELOAD = os.getenv('DJANGO_HSTS_PRELOAD', 'False').lower() == 'true'
+
+# ==============================================================================
+# ДОВЕРЕННЫЕ ПРОКСИ (ТЗ п.60)
+# ==============================================================================
+# X-Forwarded-For подделывается тривиально. Доверять ему можно только если
+# приложение физически недоступно напрямую и стоит за известным прокси.
+TRUSTED_PROXY_COUNT = int(os.getenv('TRUSTED_PROXY_COUNT', '1'))
+USE_X_FORWARDED_FOR = os.getenv('USE_X_FORWARDED_FOR', 'True').lower() == 'true'
 
 # ==============================================================================
 # REDIS И КЭШ (ТЗ п.20, 23, 95)
@@ -307,7 +377,9 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 # Always eager fallback in case redis is not available in dev or PythonAnywhere free tier
-CELERY_TASK_ALWAYS_EAGER = os.getenv('CELERY_TASK_ALWAYS_EAGER', 'True').lower() == 'true'
+CELERY_TASK_ALWAYS_EAGER = os.getenv(
+    'CELERY_TASK_ALWAYS_EAGER', 'False' if IS_PRODUCTION else 'True'
+).lower() == 'true'
 CELERY_TASK_EAGER_PROPAGATES = True
 
 # Под тестами задачи всегда выполняются синхронно, независимо от окружения.
@@ -318,7 +390,9 @@ if TESTING:
     CELERY_TASK_ALWAYS_EAGER = True
 
 # SMS / OTP Verification
-MOCK_SMS = os.getenv('MOCK_SMS', 'True').lower() == 'true'
+# В production demo-режим SMS выключен по умолчанию: в нём код подтверждения
+# одинаков для всех студентов, и войти можно под любым (ТЗ п.34).
+MOCK_SMS = os.getenv('MOCK_SMS', 'False' if IS_PRODUCTION else 'True').lower() == 'true'
 SMS_OTP_EXPIRY_MINUTES = 10
 SMS_MAX_ATTEMPTS = 5
 DEMO_OTP_CODE = '123456'

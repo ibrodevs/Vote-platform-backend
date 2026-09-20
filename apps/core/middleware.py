@@ -1,19 +1,43 @@
-"""Заголовки кэширования ответов (ТЗ п.60, 96).
+"""Middleware приложения: идентификатор запроса и заголовки кэширования."""
+import uuid
 
-ЗАЧЕМ
------
-ТЗ п.60 прямо запрещает CDN-кэширование статуса голосования, профиля студента,
-админского API и `POST /vote`. Запретить это технически можно только
-заголовком: без него промежуточный кэш вправе сохранить ответ и отдать его
-другому пользователю — то есть показать одному студенту данные другого.
-
-Поэтому политика по умолчанию — `private, no-store`, а публичным быть надо
-заслужить: endpoint попадает в белый список явно.
-"""
 from apps.core.cache_policy import PRIVATE_NO_STORE, PUBLIC_SHORT
 
-# Публичные пути, одинаковые для всех посетителей. Только чтение и только
-# то, что не зависит от личности запрашивающего.
+REQUEST_ID_HEADER = 'X-Request-ID'
+
+
+class RequestIDMiddleware:
+    """Присваивает каждому запросу идентификатор (ТЗ п.61, 65).
+
+    Нужен для двух вещей сразу: клиент получает его в ответе на ошибку
+    и может назвать поддержке, а в логах по нему собирается вся история
+    запроса. Без него сообщение «внутренняя ошибка» бесполезно обеим сторонам.
+
+    Идентификатор всегда генерируется сервером и никогда не берётся из
+    входящего заголовка: иначе клиент мог бы подставить чужой id и запутать
+    разбор инцидента, а то и засорить логи выбранной строкой.
+    """
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        request.request_id = str(uuid.uuid4())
+        response = self.get_response(request)
+        response[REQUEST_ID_HEADER] = request.request_id
+        return response
+
+
+# ==============================================================================
+# Cache-Control (ТЗ п.60, 96)
+# ==============================================================================
+# ТЗ п.60 прямо запрещает CDN-кэширование статуса голосования, профиля
+# студента, админского API и POST /vote. Технически запретить это можно
+# только заголовком: без него промежуточный кэш вправе сохранить ответ
+# и отдать его другому пользователю.
+#
+# Поэтому политика по умолчанию — private/no-store, а публичным надо стать явно.
+
 PUBLIC_PREFIXES = (
     "/api/v1/universities/",
     "/api/v1/news/",
@@ -24,8 +48,6 @@ PUBLIC_PREFIXES = (
     "/api/health/",
 )
 
-# Пути, которые не могут быть публичными ни при каких условиях,
-# даже если попадают под префикс выше.
 NEVER_PUBLIC_PREFIXES = (
     "/api/v1/admin/",
     "/api/v1/auth/",
@@ -47,11 +69,8 @@ class CacheControlMiddleware:
 
     def __call__(self, request):
         response = self.get_response(request)
-
-        if response.has_header("Cache-Control"):
-            return response
-
-        response["Cache-Control"] = self._policy_for(request)
+        if not response.has_header("Cache-Control"):
+            response["Cache-Control"] = self._policy_for(request)
         return response
 
     @staticmethod
@@ -61,7 +80,7 @@ class CacheControlMiddleware:
         if any(path.startswith(p) for p in NEVER_PUBLIC_PREFIXES):
             return PRIVATE_NO_STORE
 
-        # Только безопасные методы: ответ на POST/PATCH/DELETE кэшировать нельзя
+        # Ответ на POST/PATCH/DELETE кэшировать нельзя
         if request.method not in ("GET", "HEAD"):
             return PRIVATE_NO_STORE
 
