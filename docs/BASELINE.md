@@ -11,10 +11,10 @@
 | Набор | Тестов | SQLite | PostgreSQL 16.15 |
 |---|---|---|---|
 | Существующие (`apps/`) | 12 | OK | OK |
-| Contract-тесты (`tests/contract/`) | 325 | OK | OK |
+| Contract-тесты (`tests/contract/`) | 351 | OK | OK |
 | Тесты настроек (`tests/config/`) | 12 | OK | OK |
 | Concurrency-тесты (`tests/concurrency/`) — с этапа 2 | 15 | пропускаются | OK |
-| **Весь набор** | **385** | **OK, 23 skipped** | **OK, 1 skipped** |
+| **Весь набор** | **411** | **OK, 24 skipped** | **OK, 1 skipped** |
 
 **Expected failures: 0** (было 3 до этапа 2 — D-01, D-02, D-03 исправлены).
 
@@ -154,7 +154,7 @@ docker compose exec web python manage.py test
 | **Проверено** | счётчик задач воркера не меняется за полный прогон (до фикса рос на 1) |
 | **Тесты** | `tests/config/test_settings_celery.py` (2 теста) |
 
-### D-05 — OTP хранится и логируется в открытом виде
+### D-05 — OTP хранится и логируется в открытом виде (ИСПРАВЛЕНО)
 
 | | |
 |---|---|
@@ -164,6 +164,7 @@ docker compose exec web python manage.py test
 | **Наблюдение** | Коды видны прямо в выводе тестового прогона |
 | **ТЗ** | п.34 |
 | **Этап** | 8 |
+| **Статус** | **ИСПРАВЛЕНО на этапе 8.** Код хранится хэшем (`code_hash`), не логируется, не печатается, отсутствует в `__str__` и в ответе при `DEBUG=False`. Миграция гасит открытые сессии явно. Проверяет `tests/contract/test_otp_security.py` (14 тестов). |
 
 ### D-06 — Необработанные исключения отдают `str(exc)` наружу (ИСПРАВЛЕНО)
 
@@ -219,7 +220,7 @@ docker compose exec web python manage.py test
 | ~~`apps/elections/views.py:404`~~ | ~~62 запроса~~ — **устранено на этапе 4**: 3 запроса, не растёт | 25 | ✅ 4 |
 | ~~`apps/universities/serializers.py:30`~~ | ~~два COUNT на объект~~ — **устранено на этапе 4** | 26 | ✅ 4 |
 | ~~`apps/students/views.py:170`~~ | ~~гонка при регистрации~~ — **закрыта на этапе 5**: UNIQUE(LOWER(email)) | 15 | ✅ 5 |
-| `apps/students/views.py:126` | `attempts += 1; save()` — неатомарный инкремент при параллельных verify | 35 | 8 |
+| ~~`apps/students/views.py:126`~~ | ~~неатомарный инкремент~~ — **исправлено на этапе 8**: `F('attempts') + 1` и условный UPDATE для `is_verified` | 35 | ✅ 8 |
 | `apps/students/views.py:373` | `file_obj.read()` целиком в память, затем передача байтов в Celery-задачу | 41 | 7 |
 
 ### D-10 — короткий SECRET_KEY для HMAC SHA256 (ИСПРАВЛЕНО)

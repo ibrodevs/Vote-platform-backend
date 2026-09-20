@@ -5,12 +5,16 @@ from apps.core.cache import safe_get, safe_set
 from apps.core.cache_keys import student_vote_status
 from apps.core.cache_policy import CachePolicy
 from apps.core.permissions import IsStudentAuthenticated
+from apps.core.throttling import StudentActionThrottle, VoteThrottle
 from .serializers import CastVoteSerializer, VoteStatusSerializer
 from .services import cast_secret_ballot, VotingError
 from .models import VoteRecord
 
 class CastVoteView(APIView):
     permission_classes = [IsStudentAuthenticated]
+    # Ключ — студент, не IP: иначе пять тысяч студентов за университетским
+    # NAT заблокировали бы друг друга (ТЗ п.36).
+    throttle_classes = [VoteThrottle]
 
     def post(self, request):
         serializer = CastVoteSerializer(data=request.data)
@@ -38,6 +42,7 @@ class CastVoteView(APIView):
 
 class VoteStatusView(APIView):
     permission_classes = [IsStudentAuthenticated]
+    throttle_classes = [StudentActionThrottle]
 
     def get(self, request, election_id):
         # Положительный кэш (ТЗ п.21): факт участия необратим, поэтому

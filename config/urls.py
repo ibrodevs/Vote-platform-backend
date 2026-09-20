@@ -35,8 +35,11 @@ urlpatterns = [
     path('health/live', core_health.liveness, name='health-live'),
     path('health/ready', core_health.readiness, name='health-ready'),
 
-    # Django Admin
-    path('admin-django/', admin.site.urls),
+    # Django Admin (ТЗ п.98). Путь задаётся окружением: стандартный адрес
+    # находят автоматические сканеры за минуты. Это не защита сама по себе,
+    # а способ убрать админку из общего шума — настоящая защита
+    # (VPN, ограничение по IP) делается на уровне Nginx.
+    path(f'{settings.DJANGO_ADMIN_PATH}/', admin.site.urls),
 
     # Version 1 API
     path('api/v1/auth/', include('apps.accounts.urls')),

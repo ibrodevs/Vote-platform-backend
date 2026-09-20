@@ -3,7 +3,7 @@ import datetime
 import jwt
 from django.conf import settings
 from django.db import IntegrityError, transaction
-from django.db.models import Count, Max
+from django.db.models import Count, F, Max
 from django.utils import timezone
 from django.http import HttpResponse
 from rest_framework import generics, permissions, status
@@ -27,6 +27,7 @@ from .tasks import process_student_upload_batch
 from apps.universities.models import University
 from apps.accounts.models import AdminActionLog
 from apps.core.permissions import IsAdminUserWithRole, IsUniversityAdmin, IsStudentAuthenticated, IsNotObserver
+from apps.core.throttling import AuthAttemptThrottle, OtpVerifyThrottle
 
 def get_client_ip(request):
     x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
@@ -38,6 +39,7 @@ def get_client_ip(request):
 
 class StudentIdentifyView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [AuthAttemptThrottle]
 
     def post(self, request):
         serializer = StudentIdentifySerializer(data=request.data)
@@ -72,7 +74,7 @@ class StudentIdentifyView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        auth_session = send_student_otp(student, phone_input)
+        auth_session, raw_code = send_student_otp(student, phone_input)
 
         response_data = {
             "request_id": str(auth_session.id),
@@ -80,14 +82,18 @@ class StudentIdentifyView(APIView):
             "expires_in_seconds": int((auth_session.expires_at - timezone.now()).total_seconds())
         }
 
-        # Include demo code in debug mode
+        # Код возвращается только в режиме разработки. В базе он хранится
+        # хэшем, поэтому получить его иначе неоткуда (ТЗ п.34).
         if settings.DEBUG:
-            response_data["demo_code"] = auth_session.code
+            response_data["demo_code"] = raw_code
 
         return Response(response_data, status=status.HTTP_200_OK)
 
 class StudentVerifyView(APIView):
     permission_classes = [permissions.AllowAny]
+    # Перебор кода — самый привлекательный сценарий: счётчик попыток
+    # в сессии ограничивает перебор одного кода, этот лимит — по многим.
+    throttle_classes = [OtpVerifyThrottle]
 
     def post(self, request):
         serializer = StudentVerifySerializer(data=request.data)
@@ -123,18 +129,30 @@ class StudentVerifyView(APIView):
                 status=status.HTTP_429_TOO_MANY_REQUESTS
             )
 
-        auth_session.attempts += 1
-        auth_session.save(update_fields=['attempts'])
+        # ТЗ п.35: неатомарный инкремент терял попытки при параллельных
+        # запросах — перебор кода обходил лимит, запуская проверки пачками.
+        StudentAuthSession.objects.filter(pk=auth_session.pk).update(
+            attempts=F('attempts') + 1
+        )
+        auth_session.refresh_from_db(fields=['attempts'])
 
-        if auth_session.code != code_input:
+        if not auth_session.check_code(code_input):
             return Response(
                 {"error": {"code": "invalid_code", "message": f"Неверный код. Осталось попыток: {settings.SMS_MAX_ATTEMPTS - auth_session.attempts}"}},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Code is correct
-        auth_session.is_verified = True
-        auth_session.save(update_fields=['is_verified'])
+        # Код верен. Пометка «использована» делается условным UPDATE:
+        # два параллельных запроса с верным кодом иначе оба прошли бы
+        # проверку is_verified выше и оба выдали бы токен (ТЗ п.35).
+        claimed = StudentAuthSession.objects.filter(
+            pk=auth_session.pk, is_verified=False
+        ).update(is_verified=True)
+        if not claimed:
+            return Response(
+                {"error": {"code": "already_verified", "message": "Данный код уже был использован"}},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         # D-01: раньше метод заканчивался здесь без return, DRF получал None
         # и поднимал AssertionError -> 500. Весь OTP-вход был нерабочим,
@@ -192,6 +210,7 @@ def build_student_auth_response(student, request=None):
 
 class StudentRegisterView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [AuthAttemptThrottle]
 
     def post(self, request):
         serializer = StudentRegisterSerializer(data=request.data)
@@ -269,6 +288,7 @@ class StudentRegisterView(APIView):
 
 class StudentPasswordLoginView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [AuthAttemptThrottle]
 
     def post(self, request):
         serializer = StudentPasswordLoginSerializer(data=request.data)

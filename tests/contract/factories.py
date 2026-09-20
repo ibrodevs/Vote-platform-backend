@@ -105,14 +105,21 @@ def make_candidate(election, *, full_name="Кандидат Кандидатов
 
 
 def make_auth_session(student, *, code="123456", expires_in_minutes=10, **kw):
+    """Сессия подтверждения.
+
+    Код хранится хэшем (этап 8, ТЗ п.34), поэтому задаётся через set_code,
+    а не присваиванием поля.
+    """
     defaults = {
         "student": student,
         "phone_number": student.phone_number,
-        "code": code,
         "expires_at": timezone.now() + timedelta(minutes=expires_in_minutes),
     }
     defaults.update(kw)
-    return StudentAuthSession.objects.create(**defaults)
+    session = StudentAuthSession(**defaults)
+    session.set_code(code)
+    session.save()
+    return session
 
 
 def make_news(**kw):

@@ -6,6 +6,7 @@ from rest_framework.pagination import PageNumberPagination
 from .models import AdminUser, AdminActionLog
 from .serializers import AdminLoginSerializer, AdminUserSerializer, AdminActionLogSerializer
 from apps.core.permissions import IsSuperAdmin, IsAdminUserWithRole
+from apps.core.throttling import AuthAttemptThrottle
 
 def get_client_ip(request):
     x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
@@ -15,6 +16,7 @@ def get_client_ip(request):
 
 class AdminLoginView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [AuthAttemptThrottle]
 
     def post(self, request):
         serializer = AdminLoginSerializer(data=request.data)

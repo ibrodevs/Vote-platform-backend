@@ -1,4 +1,5 @@
 import uuid
+from django.contrib.auth.hashers import check_password, make_password
 from django.db import models
 from django.db.models import Q
 from django.db.models.functions import Lower, Upper
@@ -171,7 +172,12 @@ class StudentAuthSession(TimeStampedUUIDModel):
         verbose_name="Студент"
     )
     phone_number = models.CharField(max_length=50, verbose_name="Номер телефона")
-    code = models.CharField(max_length=10, verbose_name="Код подтверждения")
+    # D-05 (ТЗ п.34). Раньше здесь лежал сам код. Утечка дампа базы или
+    # доступ к админке означали возможность войти под любым студентом,
+    # у которого сейчас открыта сессия подтверждения.
+    code_hash = models.CharField(
+        max_length=255, default='', verbose_name="Хэш кода подтверждения"
+    )
     attempts = models.PositiveSmallIntegerField(default=0, verbose_name="Попытки")
     is_verified = models.BooleanField(default=False, verbose_name="Подтвержден")
     expires_at = models.DateTimeField(verbose_name="Истекает в")
@@ -181,5 +187,13 @@ class StudentAuthSession(TimeStampedUUIDModel):
         verbose_name_plural = "Сессии аутентификации студентов"
         ordering = ['-created_at']
 
+    def set_code(self, raw_code: str) -> None:
+        self.code_hash = make_password(raw_code)
+
+    def check_code(self, raw_code: str) -> bool:
+        return bool(self.code_hash) and check_password(raw_code, self.code_hash)
+
     def __str__(self):
-        return f"OTP для {self.student.full_name} ({self.code}) - {'OK' if self.is_verified else 'Pending'}"
+        # Ни кода, ни его хэша: __str__ попадает в админку, логи и трейсбеки.
+        state = 'подтверждена' if self.is_verified else 'ожидает'
+        return f"Сессия подтверждения {self.id} ({state})"

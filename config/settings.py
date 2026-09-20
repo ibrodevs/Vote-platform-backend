@@ -35,6 +35,10 @@ if IS_PRODUCTION and DEBUG:
     )
 
 
+# Флаг тестового прогона нужен нескольким блокам настроек ниже
+TESTING = 'test' in sys.argv
+
+
 def _env_list(name, default=''):
     return [item.strip() for item in os.getenv(name, default).split(',') if item.strip()]
 
@@ -244,11 +248,42 @@ REST_FRAMEWORK = {
         'rest_framework.filters.OrderingFilter',
     ),
     'EXCEPTION_HANDLER': 'apps.core.exceptions.custom_exception_handler',
+    # Классы троттлинга назначаются на конкретных вьюхах: глобальный лимит
+    # по IP заблокировал бы университет за одним NAT (ТЗ п.36).
+    'DEFAULT_THROTTLE_CLASSES': (),
     # D-03: по умолчанию DRF перехватывает ?format= для выбора рендерера, из-за
     # чего ?format=xlsx на /admin/students/template/ давал 404, не доходя до view.
     # Переименование освобождает ?format= для прикладного использования
     # и сохраняет возможность DRF под именем ?_format=.
     'URL_FORMAT_OVERRIDE': '_format',
+}
+
+# Путь к Django admin (ТЗ п.98). Стандартный /admin/ сканеры находят
+# за минуты; вынос на нестандартный путь убирает админку из общего шума.
+# Настоящее ограничение доступа (VPN, allowlist по IP) — на уровне Nginx.
+DJANGO_ADMIN_PATH = os.getenv('DJANGO_ADMIN_PATH', 'admin-django').strip('/')
+
+# ==============================================================================
+# ОГРАНИЧЕНИЕ ЧАСТОТЫ ЗАПРОСОВ (ТЗ п.36)
+# ==============================================================================
+# Выключается целиком для нагрузочного тестирования: иначе бенчмарк этапа 10
+# измерял бы работу троттлера, а не приложения.
+# Под тестами выключено: сотни тестов логинятся с одного адреса и упёрлись бы
+# в лимит, измеряя работу троттлера вместо проверяемого поведения.
+# Сами лимиты проверяются в tests/contract/test_rate_limiting.py явным
+# включением через override_settings.
+RATE_LIMIT_ENABLED = (
+    not TESTING and os.getenv('RATE_LIMIT_ENABLED', 'True').lower() == 'true'
+)
+
+# Пороги. Ключ для student_action и vote — идентификатор студента,
+# для auth_attempt и otp_verify — IP. Разница принципиальна: лимит по IP
+# на голосовании заблокировал бы весь университет за одним NAT.
+RATE_LIMITS = {
+    'auth_attempt': os.getenv('RATE_LIMIT_AUTH', '20/min'),
+    'otp_verify': os.getenv('RATE_LIMIT_OTP_VERIFY', '10/min'),
+    'student_action': os.getenv('RATE_LIMIT_STUDENT', '120/min'),
+    'vote': os.getenv('RATE_LIMIT_VOTE', '20/min'),
 }
 
 # JWT Configuration
@@ -353,8 +388,6 @@ USE_X_FORWARDED_FOR = os.getenv('USE_X_FORWARDED_FOR', 'True').lower() == 'true'
 # ==============================================================================
 # REDIS И КЭШ (ТЗ п.20, 23, 95)
 # ==============================================================================
-TESTING = 'test' in sys.argv
-
 REDIS_URL = os.getenv('REDIS_URL', '')
 # Таймауты намеренно короткие: при недоступном Redis мы просто идём в PostgreSQL,
 # и ждать его секундами недопустимо — один зависший кэш занял бы воркер (ТЗ п.95).
