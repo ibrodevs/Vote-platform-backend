@@ -65,6 +65,14 @@ class Election(TimeStampedUUIDModel):
         verbose_name = "Выборы"
         verbose_name_plural = "Выборы"
         ordering = ['-starts_at']
+        constraints = [
+            # ТЗ п.16. Окно с началом не раньше конца делает выборы
+            # неголосуемыми при статусе ACTIVE — то есть тихо сломанными.
+            models.CheckConstraint(
+                condition=models.Q(starts_at__lt=models.F('ends_at')),
+                name='election_starts_before_ends',
+            ),
+        ]
 
     def __str__(self):
         return f"{self.title} ({self.university.code}) - {self.get_status_display()}"

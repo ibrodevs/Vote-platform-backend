@@ -8,7 +8,7 @@ from datetime import timedelta
 from io import StringIO
 
 from django.core.management import call_command
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 
 from apps.candidates.models import Candidate
@@ -68,14 +68,6 @@ class AuditCommandTest(TestCase):
         make_student(b, student_id="S-1")
         output = run_audit()
         self.assertNotIn("duplicate_student_ids", output)
-
-    def test_reports_invalid_election_window(self):
-        """starts_at >= ends_at заблокирует CHECK-констрейнт этапа 2 (ТЗ п.16)."""
-        uni = make_university()
-        now = timezone.now()
-        make_election(uni, starts_at=now + timedelta(hours=2), ends_at=now)
-        output = run_audit()
-        self.assertIn("invalid_election_window", output)
 
     def test_reports_candidate_university_mismatch(self):
         uni = make_university(code="a")
@@ -140,3 +132,36 @@ class AuditCommandTest(TestCase):
         make_university()
         output = run_audit(fail_on_issues=True)
         self.assertIn("Проблем не найдено", output)
+
+
+class AuditInvalidWindowTest(TransactionTestCase):
+    """Отдельный класс: тесту нужен DDL, а внутри транзакции TestCase
+    ALTER TABLE падает на отложенных FK-триггерах PostgreSQL."""
+
+    def test_reports_invalid_election_window(self):
+        """Аудит ловит starts_at >= ends_at.
+
+        С этапа 2 такие данные запрещены CHECK-констрейнтом, поэтому воспроизвести
+        их можно только временно сняв констрейнт. Проверка остаётся нужной: она
+        существует ровно для баз, где констрейнта ещё нет — например для живого
+        SQLite-деплоя до миграции (ТЗ п.16, 54).
+        """
+        from django.db import connection
+
+        constraint = next(
+            c for c in Election._meta.constraints
+            if c.name == "election_starts_before_ends"
+        )
+        uni = make_university()
+        now = timezone.now()
+
+        with connection.schema_editor(atomic=False) as editor:
+            editor.remove_constraint(Election, constraint)
+        try:
+            make_election(uni, starts_at=now + timedelta(hours=2), ends_at=now)
+            output = run_audit()
+            self.assertIn("invalid_election_window", output)
+        finally:
+            Election.objects.all().delete()
+            with connection.schema_editor(atomic=False) as editor:
+                editor.add_constraint(Election, constraint)
