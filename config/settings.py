@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 from datetime import timedelta
+from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -73,20 +74,48 @@ TEMPLATES = [
 WSGI_APPLICATION = 'config.wsgi.application'
 ASGI_APPLICATION = 'config.asgi.application'
 
-# Database configuration: SQLite (default zero-config), MySQL (PythonAnywhere), or PostgreSQL
-DB_ENGINE = os.getenv('DB_ENGINE', 'sqlite')
+# ==============================================================================
+# DATABASE (ТЗ п.12, 13, 102)
+# ==============================================================================
+# DJANGO_ENV — явный маркер окружения. По умолчанию 'development', поэтому
+# поведение существующих деплоев, которые эту переменную не задают, не меняется.
+DJANGO_ENV = os.getenv('DJANGO_ENV', 'development').strip().lower()
+IS_PRODUCTION = DJANGO_ENV == 'production'
+
+# В production поддерживается только PostgreSQL. SQLite и MySQL остаются
+# доступными для локальной разработки, но в production приложение обязано
+# падать на старте, а не молча работать на непригодной базе.
+DB_ENGINE = os.getenv('DB_ENGINE', 'postgresql' if IS_PRODUCTION else 'sqlite').strip().lower()
+
+if IS_PRODUCTION and DB_ENGINE != 'postgresql':
+    raise ImproperlyConfigured(
+        f"DJANGO_ENV=production требует DB_ENGINE=postgresql, получено {DB_ENGINE!r}. "
+        "SQLite и MySQL не поддерживаются в production (ТЗ п.12)."
+    )
+
+# CONN_MAX_AGE=0 по умолчанию осознанно: за PgBouncer в transaction pooling
+# persistent-соединения Django вредны. Значение настраивается на этапе 7.
+DB_CONN_MAX_AGE = int(os.getenv('DB_CONN_MAX_AGE', '0'))
+DB_CONNECT_TIMEOUT = int(os.getenv('DB_CONNECT_TIMEOUT', '10'))
+
 if DB_ENGINE == 'postgresql':
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.postgresql',
             'NAME': os.getenv('DB_NAME', 'vote_db'),
             'USER': os.getenv('DB_USER', 'postgres'),
-            'PASSWORD': os.getenv('DB_PASSWORD', 'postgres'),
+            'PASSWORD': os.getenv('DB_PASSWORD', ''),
             'HOST': os.getenv('DB_HOST', '127.0.0.1'),
             'PORT': os.getenv('DB_PORT', '5432'),
+            'CONN_MAX_AGE': DB_CONN_MAX_AGE,
+            'OPTIONS': {
+                # Не позволять одному зависшему соединению занять воркер (ТЗ п.95)
+                'connect_timeout': DB_CONNECT_TIMEOUT,
+            },
         }
     }
 elif DB_ENGINE == 'mysql':
+    # Только локальная разработка. В production отвергается проверкой выше.
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.mysql',
@@ -98,6 +127,9 @@ elif DB_ENGINE == 'mysql':
         }
     }
 else:
+    # Только локальная разработка. Конкуррентность, блокировки и планы запросов
+    # у SQLite другие — зелёный прогон здесь не доказывает корректность в production
+    # (ТЗ п.107). Тесты на PostgreSQL: config/settings_test.py
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
