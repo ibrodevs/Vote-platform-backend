@@ -13,7 +13,8 @@
 | Существующие (`apps/`) | 12 | OK | OK |
 | Contract-тесты (`tests/contract/`) | 127 | OK, 3 expected failures | OK, 3 expected failures |
 | Тесты настроек (`tests/config/`) — с этапа 1 | 10 | OK | OK |
-| **Весь набор** | **149** | **OK, 3 expected failures** | **OK, 3 expected failures** |
+| Тесты `audit_db_data` — с этапа 1 | 12 | OK | OK |
+| **Весь набор** | **161** | **OK, 3 expected failures** | **OK, 3 expected failures** |
 
 Прогон на PostgreSQL добавлен на этапе 1 (ТЗ п.107). Расхождений между СУБД нет:
 139 тестов этапа 0 дают одинаковый результат на обеих.

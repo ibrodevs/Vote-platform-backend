@@ -123,7 +123,11 @@ load tests → профилирование → повторная оптими�
 
 ---
 
-## Этап 1 — PostgreSQL как production-база + Docker dev/test окружение
+## Этап 1 — PostgreSQL как production-база + Docker dev/test окружение ✅ ВЫПОЛНЕН (2026-09-20)
+
+> План: `2026-09-20-stage1-postgresql.md`. Результат: psycopg 3 + pinned requirements,
+> fail-fast на не-PostgreSQL в production, весь набор (149 тестов) зелёный на PostgreSQL 16.15,
+> docker-compose, `audit_db_data`, `docs/SQLITE_TO_POSTGRES.md`, CI на GitHub Actions, README.
 
 **Пункты ТЗ:** 12, 13 (подготовка), 55, 56, 58, 68, 107
 **Зачем здесь:** PostgreSQL advisory locks и честные concurrency-тесты физически невозможны
