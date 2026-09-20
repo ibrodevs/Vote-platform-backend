@@ -22,6 +22,8 @@ Django 5.2 · DRF · PostgreSQL · Celery · Redis
    а не проверкой в Python.
 4. **Голос не уходит в очередь.** Запись голоса синхронна. Celery — для импортов,
    экспортов, уведомлений и обслуживания.
+5. **Redis — ускоритель, а не источник истины.** При недоступном Redis система
+   продолжает работать через PostgreSQL: и аутентификация, и голосование.
 
 Подробнее: [docs/API_CONTRACT.md](docs/API_CONTRACT.md).
 
@@ -72,6 +74,11 @@ dev-пароли и Redis без аутентификации, поэтому с
 | `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT` | — | подключение к БД |
 | `DB_CONN_MAX_AGE` | `0` | persistent-соединения; `0` корректно для PgBouncer |
 | `DB_CONNECT_TIMEOUT` | `10` | таймаут подключения к БД, секунды |
+| `REDIS_URL` | пусто (тогда LocMemCache) | кэш личностей студентов |
+| `REDIS_CONNECT_TIMEOUT` | `0.2` | таймаут подключения к Redis, секунды |
+| `REDIS_SOCKET_TIMEOUT` | `0.2` | таймаут операции Redis, секунды |
+| `AUTH_PRINCIPAL_CACHE_TTL` | `900` | время жизни личности в кэше, секунды |
+| `STUDENT_TOKEN_ALLOW_MISSING_AUTH_VERSION` | `True` | принимать токены, выпущенные до этапа 3 |
 | `CELERY_BROKER_URL` | `redis://127.0.0.1:6379/0` | брокер Celery |
 | `CELERY_TASK_ALWAYS_EAGER` | `True` | в production обязан быть `False` |
 
@@ -148,7 +155,8 @@ python manage.py makemigrations --check --dry-run
 Идёт поэтапная переработка под высокую нагрузку. План и порядок этапов —
 [docs/superpowers/plans/2026-09-20-highload-roadmap.md](docs/superpowers/plans/2026-09-20-highload-roadmap.md).
 
-Выполнено: этап 0 (фиксация API-контракта), этап 1 (PostgreSQL и окружение).
+Выполнено: этап 0 (фиксация API-контракта), этап 1 (PostgreSQL и окружение),
+этап 2 (корректность и конкуррентность голосования), этап 3 (аутентификация).
 
 Характеристики производительности **не измерялись**. Никаких заявлений о
 пропускной способности здесь не будет, пока не появятся результаты нагрузочных

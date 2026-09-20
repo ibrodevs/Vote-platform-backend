@@ -11,10 +11,10 @@
 | Набор | Тестов | SQLite | PostgreSQL 16.15 |
 |---|---|---|---|
 | Существующие (`apps/`) | 12 | OK | OK |
-| Contract-тесты (`tests/contract/`) | 163 | OK | OK |
+| Contract-тесты (`tests/contract/`) | 203 | OK | OK |
 | Тесты настроек (`tests/config/`) | 12 | OK | OK |
 | Concurrency-тесты (`tests/concurrency/`) — с этапа 2 | 15 | пропускаются | OK |
-| **Весь набор** | **223** | **OK, 20 skipped** | **OK, 1 skipped** |
+| **Весь набор** | **263** | **OK, 20 skipped** | **OK, 1 skipped** |
 
 **Expected failures: 0** (было 3 до этапа 2 — D-01, D-02, D-03 исправлены).
 
@@ -110,7 +110,7 @@ docker compose exec web python manage.py test
 | **Этап** | 2 |
 | **Статус** | **ИСПРАВЛЕНО на этапе 2.** `URL_FORMAT_OVERRIDE = '_format'`. Проверяют `test_students_template_xlsx_is_reachable` и `test_drf_format_override_still_available_under_new_name`. |
 
-### D-04 — JWT не проверяет `Student.is_active`, нет механизма отзыва
+### D-04 — JWT не проверяет `Student.is_active`, нет механизма отзыва (ИСПРАВЛЕНО)
 
 | | |
 |---|---|
@@ -121,6 +121,7 @@ docker compose exec web python manage.py test
 | **Тест** | `test_deactivated_student_can_still_vote_with_old_token` (фиксирует факт) |
 | **ТЗ** | п.18, 19 |
 | **Этап** | 3 — вместе с `auth_version` и Redis principal cache |
+| **Статус** | **ИСПРАВЛЕНО на этапе 3.** Добавлена проверка `is_active` и механизм `auth_version`: деактивация и смена пароля немедленно обесценивают выданные токены. Проверяют `tests/contract/test_token_revocation.py` (14 тестов) и `test_deactivated_student_cannot_vote`. |
 
 ### D-08 — тесты отправляли задачи Celery в реальный брокер (ИСПРАВЛЕНО на этапе 1)
 
@@ -191,7 +192,7 @@ docker compose exec web python manage.py test
 | ~~`apps/voting/services.py:96`~~ | ~~коррелируемые логи~~ — **устранено на этапе 2**: `vote_accepted election_id=...` | 4 | ✅ 2 |
 | ~~`apps/voting/models.py`~~ | ~~дублирующий индекс~~ — **удалён на этапе 2** | 14 | ✅ 2 |
 | ~~`apps/voting/models.py`~~ | ~~`__str__` раскрывали стороны~~ — **исправлено на этапе 2** | 4 | ✅ 2 |
-| `apps/core/authentication.py:50` | SELECT `Student` на **каждый** authenticated request | 18 | 3 |
+| ~~`apps/core/authentication.py:50`~~ | ~~SELECT на каждый запрос~~ — **устранено на этапе 3**: 0 SQL при попадании в Redis | 18 | ✅ 3 |
 | `apps/elections/serializers.py:26` | `obj.candidates.count()` в `SerializerMethodField` → N+1 на списках | 26 | 4 |
 | `apps/elections/views.py:245` | results: `for candidate: Ballot.objects.filter(...).count()` → 1+N | 27 | 4 |
 | `apps/elections/views.py:310` | xlsx-экспорт: та же 1+N, плюс CPU/RAM в web-воркере | 27, 42 | 4, 7 |
@@ -200,6 +201,15 @@ docker compose exec web python manage.py test
 | `apps/students/views.py:170` | `Student.objects.filter(email__iexact=...).exists()` перед INSERT — гонка при параллельной регистрации | 15 | 5 |
 | `apps/students/views.py:126` | `attempts += 1; save()` — неатомарный инкремент при параллельных verify | 35 | 8 |
 | `apps/students/views.py:373` | `file_obj.read()` целиком в память, затем передача байтов в Celery-задачу | 41 | 7 |
+
+### D-10 — короткий SECRET_KEY для HMAC SHA256
+
+| | |
+|---|---|
+| **Обнаружено** | предупреждение PyJWT при работе в docker: `InsecureKeyLengthWarning: The HMAC key is 21 bytes long, which is below the minimum recommended length of 32 bytes for SHA256` |
+| **Суть** | dev-ключ `dev-only-insecure-key` короче 32 байт. Тот же класс проблемы касается и production-ключа: `DJANGO_SECRET_KEY` используется для подписи студенческих JWT, и его длина — часть стойкости подписи |
+| **Последствие** | короткий ключ снижает стоимость перебора подписи токена |
+| **Этап** | 7 — вместе с ротацией секретов и startup-валидацией: проверка длины `DJANGO_SECRET_KEY` добавляется в `production_check` |
 
 ## 4. Наблюдения по безопасности и конфигурации
 
