@@ -122,33 +122,13 @@ class AdminElectionCrudContractTest(ContractTestCase):
         self.assertEqual(res.status_code, 204)
         self.assertFalse(Election.objects.filter(id=election.id).exists())
 
-    @unittest.expectedFailure
     def test_delete_active_election_is_rejected(self):
-        """D-02: perform_destroy возвращает Response, который DRF игнорирует.
-
-        Намеренное поведение (уже заложено в коде): 400 active_election.
-        Фактическое: 204 при том, что выборы не удалены.
-        Снять expectedFailure после исправления на этапе 2.
-        """
+        """D-02 исправлен на этапе 2: было 204 при неудалённых выборах."""
         election = make_election(self.uni, status=Election.Status.ACTIVE)
         res = self.client.delete(f"/api/v1/admin/elections/{election.id}/")
         self.assertEqual(res.status_code, 400)
         self.assertErrorEnvelope(res, "active_election")
-
-    def test_delete_active_election_current_behaviour_lies_to_client(self):
-        """Фактический ущерб от D-02: клиенту сообщают об удалении, которого не было.
-
-        perform_destroy выходит через return Response(...) ДО instance.delete().
-        DRF возврат игнорирует и всё равно отдаёт 204. Фронтенд убирает строку
-        из таблицы, после перезагрузки выборы возвращаются.
-        """
-        election = make_election(self.uni, status=Election.Status.ACTIVE)
-        res = self.client.delete(f"/api/v1/admin/elections/{election.id}/")
-        self.assertEqual(res.status_code, 204)
-        self.assertTrue(
-            Election.objects.filter(id=election.id).exists(),
-            "активные выборы не удаляются — но клиент об этом не узнаёт",
-        )
+        self.assertTrue(Election.objects.filter(id=election.id).exists())
 
 
 class AdminElectionLifecycleContractTest(ContractTestCase):

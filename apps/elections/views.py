@@ -5,6 +5,7 @@ from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from django.utils import timezone
 from django.http import HttpResponse
 from rest_framework import generics, status, permissions
+from rest_framework.exceptions import APIException
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
@@ -12,6 +13,13 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
 
 from .models import Election
+from .services import (
+    ElectionStateError,
+    cancel_election,
+    delete_election,
+    finish_election,
+    start_election,
+)
 from .serializers import (
     ElectionSerializer, ElectionStudentSerializer,
     TurnoutSerializer, ElectionResultsSerializer
@@ -21,6 +29,20 @@ from apps.students.models import Student
 from apps.voting.models import VoteRecord, Ballot
 from apps.core.permissions import IsAdminUserWithRole, IsStudentAuthenticated, IsNotObserver, IsSuperAdmin
 from apps.accounts.models import AdminActionLog
+
+class ElectionOperationDenied(APIException):
+    """Переводит ElectionStateError в ответ DRF.
+
+    Нужно именно исключение: DRF игнорирует значение, возвращённое из
+    perform_destroy и других perform_*-хуков.
+    """
+    status_code = status.HTTP_400_BAD_REQUEST
+
+    def __init__(self, error):
+        self.detail = error.message
+        self.default_code = error.code
+        super().__init__(error.message, code=error.code)
+
 
 def get_client_ip(request):
     x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
@@ -86,20 +108,24 @@ class AdminElectionDetailView(generics.RetrieveUpdateDestroyAPIView):
         )
 
     def perform_destroy(self, instance):
-        if instance.status == Election.Status.ACTIVE:
-            return Response(
-                {"error": {"code": "active_election", "message": "Невозможно удалить активные выборы. Сначала отмените или завершите их."}},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        # D-02: раньше здесь был `return Response(...)`. DRF возвращаемое значение
+        # perform_destroy ИГНОРИРУЕТ и всегда отдаёт 204 — клиенту сообщалось об
+        # удалении, которого не было. Ошибку нужно поднимать, а не возвращать.
+        title = instance.title
+        election_id = str(instance.id)
+        try:
+            delete_election(instance)
+        except ElectionStateError as exc:
+            raise ElectionOperationDenied(exc)
+
         AdminActionLog.objects.create(
             admin=self.request.user,
             action="delete_election",
             target_type="election",
-            target_id=str(instance.id),
-            details={"title": instance.title},
+            target_id=election_id,
+            details={"title": title},
             ip_address=get_client_ip(self.request)
         )
-        instance.delete()
 
 class AdminElectionStartView(APIView):
     permission_classes = [IsAdminUserWithRole, IsNotObserver]
@@ -114,11 +140,10 @@ class AdminElectionStartView(APIView):
             if election.university_id != request.user.university_id:
                 return Response({"error": {"code": "forbidden", "message": "Доступ ограничен вашим университетом"}}, status=status.HTTP_403_FORBIDDEN)
 
-        if election.candidates.count() < 1:
-            return Response({"error": {"code": "no_candidates", "message": "Нельзя запустить выборы без кандидатов"}}, status=status.HTTP_400_BAD_REQUEST)
-
-        election.status = Election.Status.ACTIVE
-        election.save(update_fields=['status'])
+        try:
+            election = start_election(election)
+        except ElectionStateError as exc:
+            return Response({"error": {"code": exc.code, "message": exc.message}}, status=status.HTTP_400_BAD_REQUEST)
 
         AdminActionLog.objects.create(
             admin=request.user,
@@ -144,8 +169,10 @@ class AdminElectionFinishView(APIView):
             if election.university_id != request.user.university_id:
                 return Response({"error": {"code": "forbidden", "message": "Доступ ограничен вашим университетом"}}, status=status.HTTP_403_FORBIDDEN)
 
-        election.status = Election.Status.FINISHED
-        election.save(update_fields=['status'])
+        try:
+            election = finish_election(election)
+        except ElectionStateError as exc:
+            return Response({"error": {"code": exc.code, "message": exc.message}}, status=status.HTTP_400_BAD_REQUEST)
 
         AdminActionLog.objects.create(
             admin=request.user,
@@ -171,8 +198,10 @@ class AdminElectionCancelView(APIView):
             if election.university_id != request.user.university_id:
                 return Response({"error": {"code": "forbidden", "message": "Доступ ограничен вашим университетом"}}, status=status.HTTP_403_FORBIDDEN)
 
-        election.status = Election.Status.CANCELLED
-        election.save(update_fields=['status'])
+        try:
+            election = cancel_election(election)
+        except ElectionStateError as exc:
+            return Response({"error": {"code": exc.code, "message": exc.message}}, status=status.HTTP_400_BAD_REQUEST)
 
         AdminActionLog.objects.create(
             admin=request.user,
