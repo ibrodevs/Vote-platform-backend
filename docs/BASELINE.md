@@ -11,11 +11,15 @@
 | Набор | Тестов | SQLite | PostgreSQL 16.15 |
 |---|---|---|---|
 | Существующие (`apps/`) | 12 | OK | OK |
-| Contract-тесты (`tests/contract/`) | 127 | OK, 3 expected failures | OK, 3 expected failures |
-| Тесты настроек (`tests/config/`) — с этапа 1 | 10 | OK | OK |
-| Тесты `audit_db_data` — с этапа 1 | 12 | OK | OK |
-| Тесты Celery-режима — с этапа 1 | 2 | OK | OK |
-| **Весь набор** | **163** | **OK, 3 expected failures** | **OK, 3 expected failures** |
+| Contract-тесты (`tests/contract/`) | 163 | OK | OK |
+| Тесты настроек (`tests/config/`) | 12 | OK | OK |
+| Concurrency-тесты (`tests/concurrency/`) — с этапа 2 | 15 | пропускаются | OK |
+| **Весь набор** | **223** | **OK, 20 skipped** | **OK, 1 skipped** |
+
+**Expected failures: 0** (было 3 до этапа 2 — D-01, D-02, D-03 исправлены).
+
+На SQLite пропускаются concurrency-тесты, семантика advisory-локов и тест DDL:
+там нет advisory locks и другая модель блокировок, зелёный прогон ничего не доказывал бы.
 
 Прогон на PostgreSQL добавлен на этапе 1 (ТЗ п.107). Расхождений между СУБД нет:
 139 тестов этапа 0 дают одинаковый результат на обеих.
@@ -66,7 +70,7 @@ docker compose exec web python manage.py test
 `expectedFailure` означает: тест описывает **намеренный** контракт и сейчас падает.
 После исправления дефекта декоратор снимается, и тест начинает защищать поведение.
 
-### D-01 — OTP verify не возвращает ответ (500)
+### D-01 — OTP verify не возвращает ответ (500) (ИСПРАВЛЕНО)
 
 | | |
 |---|---|
@@ -77,8 +81,9 @@ docker compose exec web python manage.py test
 | **Тест** | `test_verify_returns_student_token` (`@expectedFailure`) |
 | **ТЗ** | п.66 — восстановление уже задуманной логики, менять фронтенд не требуется |
 | **Этап** | 2 |
+| **Статус** | **ИСПРАВЛЕНО на этапе 2.** Добавлен `return Response(build_student_auth_response(...))`. Тело ответа вынесено в общий хелпер, чтобы register/login/verify не разъезжались. Проверяет `test_verify_returns_student_token`. |
 
-### D-02 — DELETE активных выборов сообщает об удалении, которого не было
+### D-02 — DELETE активных выборов сообщает об удалении, которого не было (ИСПРАВЛЕНО)
 
 | | |
 |---|---|
@@ -90,8 +95,9 @@ docker compose exec web python manage.py test
 | **Тесты** | `test_delete_active_election_is_rejected` (`@expectedFailure`), `test_delete_active_election_current_behaviour_lies_to_client` (фиксирует факт) |
 | **ТЗ** | п.66 |
 | **Этап** | 2 |
+| **Статус** | **ИСПРАВЛЕНО на этапе 2.** `perform_destroy` поднимает `ElectionOperationDenied` вместо `return Response(...)`. Проверяют `test_delete_active_election_is_rejected` и `test_delete_active_election_returns_400_and_keeps_it`. |
 
-### D-03 — XLSX-шаблон студентов недостижим
+### D-03 — XLSX-шаблон студентов недостижим (ИСПРАВЛЕНО)
 
 | | |
 |---|---|
@@ -102,6 +108,7 @@ docker compose exec web python manage.py test
 | **Тесты** | `test_students_template_format_param_is_swallowed_by_drf` (факт), `test_students_template_xlsx_is_reachable` (`@expectedFailure`) |
 | **Исправление** | переименовать параметр (например `kind`) или задать `URL_FORMAT_OVERRIDE = None`. Фронтенд endpoint не вызывает — риск нулевой |
 | **Этап** | 2 |
+| **Статус** | **ИСПРАВЛЕНО на этапе 2.** `URL_FORMAT_OVERRIDE = '_format'`. Проверяют `test_students_template_xlsx_is_reachable` и `test_drf_format_override_still_available_under_new_name`. |
 
 ### D-04 — JWT не проверяет `Student.is_active`, нет механизма отзыва
 
@@ -148,7 +155,7 @@ docker compose exec web python manage.py test
 | **ТЗ** | п.65 |
 | **Этап** | 3 (auth) и 7 (общий обработчик) |
 
-### D-07 — `start_election` не проверяет ни текущий статус, ни окно времени
+### D-07 — `start_election` не проверяет ни текущий статус, ни окно времени (ИСПРАВЛЕНО)
 
 | | |
 |---|---|
@@ -158,8 +165,19 @@ docker compose exec web python manage.py test
 | **Наблюдение** | покрыто contract-тестами как текущее поведение; как дефект — на этапе 2 вместе с exclusive advisory lock |
 | **ТЗ** | п.8, 17, 52 |
 | **Этап** | 2 |
+| **Статус** | **ИСПРАВЛЕНО на этапе 2.** Переходы из терминальных статусов запрещены, новый код `invalid_status_transition`. Проверяют тесты в `tests/contract/test_election_lifecycle.py`. |
 
 ---
+
+### D-09 — `FOR UPDATE` на выборах блокировал любую вставку с FK (ИСПРАВЛЕНО на этапе 2)
+
+| | |
+|---|---|
+| **Файл** | `apps/voting/services.py` (прежняя редакция) |
+| **Суть** | `Election.objects.select_for_update()` брал `FOR UPDATE` на строке выборов на всю транзакцию голосования. В PostgreSQL этот режим конфликтует не только с другими `FOR UPDATE`, но и с `FOR KEY SHARE`, который берётся при вставке **любой** строки с внешним ключом на эти выборы |
+| **Последствие** | Сериализовались не только голоса, но и любые параллельные вставки `VoteRecord`, `Ballot`, `Candidate`, ссылающиеся на те же выборы. Масштаб проблемы был больше, чем описано в ТЗ п.7 |
+| **Обнаружено** | прямым замером при написании regression-стража: `INSERT` с FK при удерживаемом `FOR UPDATE` — ЗАБЛОКИРОВАН |
+| **Статус** | **ИСПРАВЛЕНО на этапе 2** вместе с основным рефакторингом. Защищено двумя стражами в `tests/concurrency/test_no_row_lock.py`, каждый проверен на способность падать |
 
 ## 3. Наблюдения по производительности (без изменений на этапе 0)
 
@@ -167,12 +185,12 @@ docker compose exec web python manage.py test
 
 | Место | Проблема | ТЗ | Этап |
 |---|---|---|---|
-| `apps/voting/services.py:44` | `Election.objects.select_for_update()` — глобальная сериализация всех голосов одних выборов через одну строку | 7 | 2 |
-| `apps/voting/services.py:67` | `VoteRecord...select_for_update().exists()` — check-then-insert вместо DB-констрейнта | 6 | 2 |
-| `apps/voting/services.py:80` | `IntegrityError` перехвачен внутри `atomic()` без savepoint → транзакция в broken state, а следом выполняется `Ballot.objects.create()` | 10 | 2 |
-| `apps/voting/services.py:96` | два соседних `logger.info`: participation со `student.id` и ballot с `candidate_id`, один `election_id` — корреляция восстанавливается по времени | 4 | 2 |
-| `apps/voting/models.py` | `Index(fields=['election','student'])` дублирует индекс от `unique_together` | 14 | 5 |
-| `apps/voting/models.py` | `VoteRecord.__str__` печатает `student.student_id`, `Ballot.__str__` — кандидата | 4 | 2 |
+| ~~`apps/voting/services.py:44`~~ | ~~`select_for_update()`~~ — **устранено на этапе 2** | 7 | ✅ 2 |
+| ~~`apps/voting/services.py:67`~~ | ~~check-then-insert~~ — **устранено на этапе 2**, защиту даёт UNIQUE | 6 | ✅ 2 |
+| ~~`apps/voting/services.py:80`~~ | ~~broken state~~ — **устранено на этапе 2**, INSERT в savepoint | 10 | ✅ 2 |
+| ~~`apps/voting/services.py:96`~~ | ~~коррелируемые логи~~ — **устранено на этапе 2**: `vote_accepted election_id=...` | 4 | ✅ 2 |
+| ~~`apps/voting/models.py`~~ | ~~дублирующий индекс~~ — **удалён на этапе 2** | 14 | ✅ 2 |
+| ~~`apps/voting/models.py`~~ | ~~`__str__` раскрывали стороны~~ — **исправлено на этапе 2** | 4 | ✅ 2 |
 | `apps/core/authentication.py:50` | SELECT `Student` на **каждый** authenticated request | 18 | 3 |
 | `apps/elections/serializers.py:26` | `obj.candidates.count()` в `SerializerMethodField` → N+1 на списках | 26 | 4 |
 | `apps/elections/views.py:245` | results: `for candidate: Ballot.objects.filter(...).count()` → 1+N | 27 | 4 |

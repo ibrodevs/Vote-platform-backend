@@ -48,7 +48,8 @@
 | `not_found` | 404 | общий код для «объект не найден» в 12 местах |
 | `forbidden` | 403 | доступ ограничен своим университетом / роль не позволяет (9 мест) |
 | `no_candidates` | 400 | `POST /admin/elections/<id>/start/` без кандидатов |
-| `active_election` | 400 | задуман для `DELETE /admin/elections/<id>/` активных выборов — **см. дефект D-02: сейчас не отдаётся** |
+| `active_election` | 400 | `DELETE /admin/elections/<id>/` активных выборов |
+| `invalid_status_transition` | 400 | start/finish/cancel из терминального статуса (**добавлен на этапе 2**) |
 | `results_hidden` | 403 | results и results/export до завершения при выключенном флаге |
 | `file_required` | 400 | `POST .../students/upload/` без файла |
 | `missing_university` | 400 | `toggle-registration` без id и без вуза у админа |
@@ -193,12 +194,14 @@ PATCH принимает `multipart` с `photo` и/или `full_name`, возв�
 Сверка телефона — по последним 9 цифрам.
 Ошибки: `university_not_found` 404, `student_not_found` 404, `phone_mismatch` 400.
 
-### `POST .../verify/` — **нерабочий (D-01)**
+### `POST .../verify/` → **200**
 
-Намеренный контракт (его ждёт фронтенд): 200 и `{student_token, student, university}`.
-Фактически view не возвращает `Response` → DRF бросает `AssertionError` → **500**.
-Пути ошибок при этом работают: `invalid_session`, `already_verified`, `code_expired`,
-`invalid_code` (400), `too_many_attempts` (429).
+Запрос: `{request_id, code}`. Ответ — **та же структура**, что у register и login:
+`{student_token, student, university}`.
+Ошибки: `invalid_session`, `already_verified`, `code_expired`, `invalid_code` (400),
+`too_many_attempts` (429).
+
+До этапа 2 этот endpoint возвращал 500 (дефект D-01) и OTP-вход был нерабочим.
 
 ---
 
@@ -262,7 +265,25 @@ Auth: студенческий токен. Запрос: `{election_id, candidat
 сортировка по `starts_at, created_at, title, featured_order` (по умолчанию `-created_at`).
 Админ вуза видит только свои выборы; для чужих start/finish/cancel → 403 `forbidden`.
 `start` без кандидатов → 400 `no_candidates`.
-`DELETE` активных выборов → **204, но ничего не удалено** (D-02).
+`DELETE` активных выборов → **400 `active_election`**, выборы сохраняются.
+
+**Переходы состояний (с этапа 2).** Терминальные статусы `finished` и `cancelled`
+покинуть нельзя — иначе завершённые выборы переоткрываются и голосование идёт
+поверх готовых результатов:
+
+| Операция | Разрешено из | Запрещено из | Идемпотентно |
+|---|---|---|---|
+| `start` | `draft`, `scheduled` | `finished`, `cancelled` → 400 `invalid_status_transition` | `active` → 200 без изменений |
+| `finish` | `draft`, `scheduled`, `active` | `cancelled` → 400 | `finished` → 200 |
+| `cancel` | `draft`, `scheduled`, `active` | `finished` → 400 | `cancelled` → 200 |
+| `DELETE` | любой, кроме `active` | `active` → 400 `active_election` | — |
+
+Окно времени при `start` намеренно не проверяется: выборы с окном в прошлом
+безвредны, потому что голосование всё равно сверяет `starts_at <= now <= ends_at`.
+
+Каждая из этих операций берёт EXCLUSIVE advisory-лок по `election_id`, а голосование —
+SHARED по тому же ключу. Поэтому `finish` дожидается уже начатых голосов, а голоса,
+пришедшие после его коммита, отклоняются с `election_not_active`.
 
 **turnout:** `{election_id, election_title, status, starts_at, ends_at, total_eligible,
 total_voted, turnout_percent}`.
@@ -305,7 +326,7 @@ created_at, students_count, active_elections_count, faculties[]`.
 |---|---|---|
 | GET/POST | `/api/v1/admin/students/` | **пагинировано** |
 | GET/PATCH/DELETE | `/api/v1/admin/students/<uuid>/` | объект |
-| GET | `/api/v1/admin/students/template/` | CSV; `?format=...` даёт 404 (D-03) |
+| GET | `/api/v1/admin/students/template/` | CSV по умолчанию, `?format=xlsx` — книга Excel |
 | GET/POST | `/api/v1/admin/universities/<uuid>/students/` | **пагинировано** |
 | POST | `/api/v1/admin/universities/<uuid>/students/upload/` | **202** |
 | GET | `/api/v1/admin/upload-batches/<uuid>/status/` | объект |
@@ -354,6 +375,9 @@ total_rows, success_count, error_count, errors_detail, status, created_at`.
 
 По умолчанию `PageNumberPagination`, `PAGE_SIZE = 20`, конверт `{count, next, previous, results}`.
 
+**`URL_FORMAT_OVERRIDE = '_format'`** (с этапа 2): выбор рендерера через query-параметр
+переехал с `?format=` на `?_format=`, чтобы `?format=` был доступен прикладным endpoint'ам.
+
 Не пагинированы (`pagination_class = None`): `/universities/`, `/faqs/`,
 `/admin/elections/<id>/candidates/`, `/admin/content/pages/`.
 Возвращают голый массив, будучи `APIView`: `/elections/recent/`, `/elections/public/`,
@@ -376,6 +400,10 @@ list → paginated обратно совместим. Но менять без �
 
 ## 10. Известные дефекты
 
-Полный реестр — в [BASELINE.md](BASELINE.md). Кратко: **D-01** (OTP verify → 500),
-**D-02** (DELETE активных выборов лжёт о результате), **D-03** (xlsx-шаблон недостижим),
-**D-04** (JWT не проверяет `is_active`).
+Полный реестр — в [BASELINE.md](BASELINE.md).
+
+Исправлены на этапе 2: **D-01** (OTP verify), **D-02** (DELETE активных выборов),
+**D-03** (xlsx-шаблон), **D-07** (переоткрытие завершённых выборов).
+
+Остаются: **D-04** (JWT не проверяет `is_active`, нет отзыва токенов) — этап 3;
+**D-05** (OTP в открытом виде) — этап 8; **D-06** (`str(exc)` наружу) — этапы 3 и 7.
