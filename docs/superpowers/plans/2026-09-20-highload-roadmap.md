@@ -318,7 +318,13 @@ EXPLAIN ANALYZE + expected rows + время; ни одного лишнего �
 
 ---
 
-## Этап 7 — Production runtime и деплой
+## Этап 7 — Production runtime и деплой ✅ ВЫПОЛНЕН (2026-09-20)
+
+> План: `2026-09-20-stage7-production.md`. Результат: `production_check` (11 проверок),
+> fail-fast на старте, security-заголовки, gunicorn.conf.py, health live/ready,
+> production Dockerfile (собран и запущен, non-root, graceful shutdown проверен),
+> docker-compose.prod.yml с PgBouncer, Nginx, .env.example, DEPLOY_PRODUCTION.md.
+> Исправлены D-06 и D-10. 385 тестов.
 
 **Пункты ТЗ:** 13 (PgBouncer), 31, 32, 33, 37, 38, 39, 40, 41, 42, 43, 44, 45, 57, 59, 60, 95, 101, 102, 103
 **Зависит от:** этап 1.

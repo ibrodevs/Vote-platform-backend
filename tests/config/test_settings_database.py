@@ -16,6 +16,16 @@ DB_ENV_KEYS = (
     "DB_PASSWORD", "DB_HOST", "DB_PORT", "DB_CONN_MAX_AGE",
 )
 
+# С этапа 7 production требует ещё и эти переменные, иначе старт валится
+# раньше, чем дело дойдёт до проверки движка базы. Здесь задаются заведомо
+# корректные значения, чтобы каждый тест проверял ровно то, что заявляет.
+PRODUCTION_PREREQS = {
+    "DJANGO_SECRET_KEY": "x" * 64,
+    "DJANGO_ALLOWED_HOSTS": "api.example.kg",
+    "DJANGO_CORS_ALLOWED_ORIGINS": "https://vote.example.kg",
+    "DJANGO_DEBUG": "False",
+}
+
 
 class DatabaseConfigTest(unittest.TestCase):
     """Каждый кейс перезагружает config.settings с нужным окружением.
@@ -26,6 +36,7 @@ class DatabaseConfigTest(unittest.TestCase):
 
     def _reload_with(self, **env):
         cleared = {k: None for k in DB_ENV_KEYS}
+        cleared.update(PRODUCTION_PREREQS)
         cleared.update(env)
         patch = {k: v for k, v in cleared.items() if v is not None}
         removed = [k for k, v in cleared.items() if v is None]
@@ -36,6 +47,9 @@ class DatabaseConfigTest(unittest.TestCase):
             return importlib.reload(settings_module)
 
     def tearDown(self):
+        # Перезагрузка без DJANGO_ENV возвращает настройки к режиму разработки
+        for key in DB_ENV_KEYS:
+            os.environ.pop(key, None)
         import config.settings as settings_module
         importlib.reload(settings_module)
 

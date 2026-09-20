@@ -11,10 +11,10 @@
 | Набор | Тестов | SQLite | PostgreSQL 16.15 |
 |---|---|---|---|
 | Существующие (`apps/`) | 12 | OK | OK |
-| Contract-тесты (`tests/contract/`) | 288 | OK | OK |
+| Contract-тесты (`tests/contract/`) | 325 | OK | OK |
 | Тесты настроек (`tests/config/`) | 12 | OK | OK |
 | Concurrency-тесты (`tests/concurrency/`) — с этапа 2 | 15 | пропускаются | OK |
-| **Весь набор** | **348** | **OK, 23 skipped** | **OK, 1 skipped** |
+| **Весь набор** | **385** | **OK, 23 skipped** | **OK, 1 skipped** |
 
 **Expected failures: 0** (было 3 до этапа 2 — D-01, D-02, D-03 исправлены).
 
@@ -165,7 +165,7 @@ docker compose exec web python manage.py test
 | **ТЗ** | п.34 |
 | **Этап** | 8 |
 
-### D-06 — Необработанные исключения отдают `str(exc)` наружу
+### D-06 — Необработанные исключения отдают `str(exc)` наружу (ИСПРАВЛЕНО)
 
 | | |
 |---|---|
@@ -174,6 +174,7 @@ docker compose exec web python manage.py test
 | **Последствие** | Внутренности (SQL, пути, значения) уходят клиенту. Тот же класс проблемы в `authentication.py:67`: `AuthenticationFailed(f"Недействительный токен: {str(e)}")` |
 | **ТЗ** | п.65 |
 | **Этап** | 3 (auth) и 7 (общий обработчик) |
+| **Статус** | **ИСПРАВЛЕНО на этапе 7.** Обработчик 500 отдаёт generic-сообщение и `request_id`; подробности только в лог. Проверяет `tests/contract/test_error_handling.py`. |
 
 ### D-07 — `start_election` не проверяет ни текущий статус, ни окно времени (ИСПРАВЛЕНО)
 
@@ -221,7 +222,7 @@ docker compose exec web python manage.py test
 | `apps/students/views.py:126` | `attempts += 1; save()` — неатомарный инкремент при параллельных verify | 35 | 8 |
 | `apps/students/views.py:373` | `file_obj.read()` целиком в память, затем передача байтов в Celery-задачу | 41 | 7 |
 
-### D-10 — короткий SECRET_KEY для HMAC SHA256
+### D-10 — короткий SECRET_KEY для HMAC SHA256 (ИСПРАВЛЕНО)
 
 | | |
 |---|---|
@@ -229,21 +230,22 @@ docker compose exec web python manage.py test
 | **Суть** | dev-ключ `dev-only-insecure-key` короче 32 байт. Тот же класс проблемы касается и production-ключа: `DJANGO_SECRET_KEY` используется для подписи студенческих JWT, и его длина — часть стойкости подписи |
 | **Последствие** | короткий ключ снижает стоимость перебора подписи токена |
 | **Этап** | 7 — вместе с ротацией секретов и startup-валидацией: проверка длины `DJANGO_SECRET_KEY` добавляется в `production_check` |
+| **Статус** | **ИСПРАВЛЕНО на этапе 7.** `production_check` проверяет длину `SECRET_KEY` (минимум 32 байта) и отвергает ключ из репозитория. |
 
 ## 4. Наблюдения по безопасности и конфигурации
 
 | Место | Проблема | ТЗ | Этап |
 |---|---|---|---|
-| `config/settings.py:11` | рабочий `SECRET_KEY` захардкожен как fallback и закоммичен → считать скомпрометированным | 32, 33 | 7 |
-| `config/settings.py:12` | `DEBUG` по умолчанию `True` | 32, 102 | 7 |
-| `config/settings.py:15` | `ALLOWED_HOSTS = ['*']` без возможности переопределить | 32 | 7 |
-| `config/settings.py:~200` | `CORS_ALLOW_ALL_ORIGINS = True`, `CORS_ALLOW_CREDENTIALS = True` | 32 | 7 |
-| `config/settings.py` | `X_FRAME_OPTIONS = 'ALLOWALL'` | 97 | 8 |
+| ~~`config/settings.py:11`~~ | fallback остался только для разработки; в production отсутствие ключа **валит старт** | 32, 33 | ✅ 7 |
+| ~~`config/settings.py:12`~~ | в production `DEBUG=True` **валит старт** | 32, 102 | ✅ 7 |
+| ~~`config/settings.py:15`~~ | из окружения; wildcard в production **валит старт** | 32 | ✅ 7 |
+| ~~`config/settings.py:~200`~~ | в production обязателен явный список origin'ов | 32 | ✅ 7 |
+| ~~`config/settings.py`~~ | `DENY` в production | 97 | ✅ 7 |
 | `config/settings.py:70` | `DB_ENGINE` по умолчанию `sqlite`, prod ничем не защищён | 12, 102 | 1, 7 |
-| `config/settings.py` | `CELERY_TASK_ALWAYS_EAGER` по умолчанию `True` — импорт Excel выполняется в web-воркере | 40 | 7 |
+| ~~`config/settings.py`~~ | в production `False`; очереди разделены | 40 | ✅ 7 |
 | `config/urls.py:57` | медиа и статика раздаются `django.views.static.serve` | 31 | 7 |
-| `Dockerfile:24` | `CMD python manage.py runserver`, root-пользователь, single-stage | 37, 57 | 7 |
-| `requirements.txt` | только `>=`, нет lock; нет `psycopg`, нет gunicorn | 12, 68 | 1 |
+| ~~`Dockerfile:24`~~ | multi-stage, non-root, gunicorn — **проверено запуском** | 37, 57 | ✅ 7 |
+| ~~`requirements.txt`~~ | полный pin, psycopg 3, gunicorn | 12, 68 | ✅ 1, 7 |
 | репозиторий | `db.sqlite3` отслеживается Git | 56 | 1 |
 | `apps/elections/views.py:22` | `get_client_ip` безусловно доверяет `X-Forwarded-For` (продублировано в 4 файлах) | 60 | 7 |
 

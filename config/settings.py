@@ -185,12 +185,37 @@ TIME_ZONE = 'Asia/Bishkek'
 USE_I18N = True
 USE_TZ = True
 
-STATIC_URL = '/static/'
+# ==============================================================================
+# СТАТИКА И МЕДИА (ТЗ п.31)
+# ==============================================================================
+# В production Django не должен раздавать файлы: каждый запрос за фотографией
+# кандидата занимает воркер, который мог бы принять голос.
+#
+# ОГРАНИЧЕНИЕ ФРОНТЕНДА: getMediaUrl() в lib/api.ts приклеивает относительный
+# путь к origin API. Поэтому при переезде на внешнее хранилище бэкенд обязан
+# отдавать АБСОЛЮТНЫЕ URL — их фронтенд возвращает как есть. Относительный
+# путь к чужому домену собрал бы битую ссылку (docs/FRONTEND_USAGE.md).
+STATIC_URL = os.getenv('DJANGO_STATIC_URL', '/static/')
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
 
-MEDIA_URL = '/media/'
+MEDIA_URL = os.getenv('DJANGO_MEDIA_URL', '/media/')
 MEDIA_ROOT = BASE_DIR / 'media'
+
+# S3-совместимое хранилище включается заданием бакета. Без него —
+# локальная файловая система, как и раньше.
+AWS_STORAGE_BUCKET_NAME = os.getenv('AWS_STORAGE_BUCKET_NAME', '')
+if AWS_STORAGE_BUCKET_NAME:
+    INSTALLED_APPS = INSTALLED_APPS + ['storages']
+    STORAGES = {
+        'default': {'BACKEND': 'storages.backends.s3.S3Storage'},
+        'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedStaticFilesStorage'},
+    }
+    AWS_S3_ENDPOINT_URL = os.getenv('AWS_S3_ENDPOINT_URL', '') or None
+    AWS_S3_CUSTOM_DOMAIN = os.getenv('AWS_S3_CUSTOM_DOMAIN', '') or None
+    AWS_S3_REGION_NAME = os.getenv('AWS_S3_REGION_NAME', '') or None
+    AWS_QUERYSTRING_AUTH = False
+    AWS_DEFAULT_ACL = None
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
@@ -381,6 +406,41 @@ CELERY_TASK_ALWAYS_EAGER = os.getenv(
     'CELERY_TASK_ALWAYS_EAGER', 'False' if IS_PRODUCTION else 'True'
 ).lower() == 'true'
 CELERY_TASK_EAGER_PROPAGATES = True
+
+# ==============================================================================
+# ОЧЕРЕДИ CELERY (ТЗ п.40, 42)
+# ==============================================================================
+# Импорт списка студентов и выгрузка Excel — тяжёлые операции. В одной очереди
+# с уведомлениями они заблокировали бы их на минуты, а запущенные на тех же
+# воркерах, что обслуживают приложение, конкурировали бы с приёмом голосов.
+#
+# Воркеры разводятся по очередям при запуске:
+#   celery -A config worker -Q default,notifications -c 4
+#   celery -A config worker -Q imports,maintenance   -c 2
+CELERY_TASK_DEFAULT_QUEUE = 'default'
+CELERY_TASK_ROUTES = {
+    'apps.students.tasks.process_student_upload_batch': {'queue': 'imports'},
+    'apps.students.tasks.*': {'queue': 'imports'},
+    'apps.notifications.*': {'queue': 'notifications'},
+    'apps.core.tasks.*': {'queue': 'maintenance'},
+}
+
+# Задача забирается воркером по одной: длинный импорт не должен
+# «застолбить» за собой пачку следующих задач.
+CELERY_WORKER_PREFETCH_MULTIPLIER = int(os.getenv('CELERY_PREFETCH', '1'))
+
+# Подтверждение после выполнения: если воркер умрёт посреди импорта,
+# задача вернётся в очередь, а не потеряется.
+CELERY_TASK_ACKS_LATE = True
+
+# Жёсткие лимиты: зависшая задача не должна держать воркер вечно.
+CELERY_TASK_SOFT_TIME_LIMIT = int(os.getenv('CELERY_SOFT_TIME_LIMIT', '600'))
+CELERY_TASK_TIME_LIMIT = int(os.getenv('CELERY_TIME_LIMIT', '900'))
+
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    'socket_connect_timeout': REDIS_CONNECT_TIMEOUT,
+    'socket_timeout': 5,
+}
 
 # Под тестами задачи всегда выполняются синхронно, независимо от окружения.
 # Иначе при CELERY_TASK_ALWAYS_EAGER=False (docker, CI) тест отправляет задачу

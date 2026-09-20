@@ -5,6 +5,8 @@ from django.conf.urls.static import static
 from django.views.static import serve
 from django.http import JsonResponse
 
+from apps.core import health as core_health
+
 def api_root(request):
     return JsonResponse({
         'status': 'online',
@@ -29,6 +31,9 @@ urlpatterns = [
     path('', api_root, name='api-root'),
     path('api/', api_root, name='api-index'),
     path('api/health/', health_check, name='health-check'),
+    # ТЗ п.43. Существующий /api/health/ сохранён для совместимости.
+    path('health/live', core_health.liveness, name='health-live'),
+    path('health/ready', core_health.readiness, name='health-ready'),
 
     # Django Admin
     path('admin-django/', admin.site.urls),
