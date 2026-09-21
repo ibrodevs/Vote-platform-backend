@@ -66,6 +66,8 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       # Реальный worker, а не синхронное выполнение в web-процессе (ТЗ п.40)
       CELERY_TASK_ALWAYS_EAGER: "False"
+      # Нагрузочные прогоны измеряют приложение, а не троттлер (ТЗ п.36)
+      RATE_LIMIT_ENABLED: "${RATE_LIMIT_ENABLED:-False}"
     volumes:
       - .:/app
       - media:/app/media

@@ -22,3 +22,7 @@ db.sqlite3-journal
 .DS_Store
 .idea/
 .vscode/
+
+# Нагрузочные тесты: файл содержит действующие JWT
+/loadtests/fixtures/
+/loadtests/results/
