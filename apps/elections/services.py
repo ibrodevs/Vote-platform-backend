@@ -24,6 +24,8 @@
 результатов. Повторный вызов той же операции идемпотентен: админ, дважды
 нажавший кнопку, ошибки не получает.
 """
+from typing import NoReturn
+
 from django.db import transaction
 
 from apps.core.cache_invalidation import invalidate_election
@@ -35,13 +37,13 @@ TERMINAL_STATUSES = frozenset({Election.Status.FINISHED, Election.Status.CANCELL
 
 
 class ElectionStateError(Exception):
-    def __init__(self, message, code="invalid_status_transition"):
+    def __init__(self, message: str, code: str = "invalid_status_transition") -> None:
         super().__init__(message)
         self.message = message
         self.code = code
 
 
-def _reject_transition(current, target):
+def _reject_transition(current: str, target: str) -> NoReturn:
     raise ElectionStateError(
         f"Невозможно перевести выборы из состояния «{current}» в «{target}». "
         "Завершённые и отменённые выборы нельзя запустить заново.",

@@ -19,6 +19,8 @@
 Агрегация идёт ТОЛЬКО по Ballot и ТОЛЬКО по candidate_id. Ни один запрос
 здесь не соединяет Student с Candidate и не имеет права этого делать.
 """
+from typing import Any
+
 from django.db.models import Count
 
 from apps.candidates.models import Candidate
@@ -55,7 +57,7 @@ def eligible_voters_count(election: Election) -> int:
     return Student.objects.filter(university_id=election.university_id, is_active=True).count()
 
 
-def election_turnout(election: Election) -> dict:
+def election_turnout(election: Election) -> dict[str, Any]:
     """Явка. Для идущих выборов кэшируется на секунды (ТЗ п.29).
 
     ТЗ п.30 запрещает счётчик-строку вроде `election.vote_count += 1`:
@@ -88,7 +90,7 @@ def election_turnout(election: Election) -> dict:
     return payload
 
 
-def election_results(election: Election) -> dict:
+def election_results(election: Election) -> dict[str, Any]:
     """Итоги выборов: явка и голоса по кандидатам.
 
     Три запроса независимо от числа кандидатов:

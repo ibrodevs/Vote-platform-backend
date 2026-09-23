@@ -11,6 +11,7 @@ Django-модель тянет за собой связанный University, в
 в аутентификации они не нужны, а утечка PII из кэша никому не нужна.
 """
 from dataclasses import dataclass
+from typing import Any, Optional
 
 CACHE_FORMAT_VERSION = 1
 
@@ -25,7 +26,7 @@ class StudentPrincipal:
     auth_version: int
 
     @classmethod
-    def from_model(cls, student) -> "StudentPrincipal":
+    def from_model(cls, student: Any) -> "StudentPrincipal":
         return cls(
             id=str(student.id),
             student_code=student.student_id,
@@ -35,7 +36,7 @@ class StudentPrincipal:
             auth_version=student.auth_version,
         )
 
-    def to_cache(self) -> dict:
+    def to_cache(self) -> dict[str, Any]:
         return {
             "v": CACHE_FORMAT_VERSION,
             "id": self.id,
@@ -47,7 +48,7 @@ class StudentPrincipal:
         }
 
     @classmethod
-    def from_cache(cls, payload):
+    def from_cache(cls, payload: Any) -> Optional["StudentPrincipal"]:
         """Возвращает None для чужого или устаревшего формата.
 
         Тихо принять запись другой версии значило бы работать с неверными

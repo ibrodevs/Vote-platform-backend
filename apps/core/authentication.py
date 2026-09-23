@@ -17,11 +17,13 @@ JWT нельзя отозвать сам по себе, поэтому в ток
 при деактивации, смене пароля и явном отзыве (apps/students/signals.py).
 """
 import logging
+from typing import Any, Optional
 
 import jwt
 from django.conf import settings
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
+from rest_framework.request import Request
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from apps.core.cache import safe_get, safe_set
@@ -67,11 +69,11 @@ class StudentUserWrapper:
     def university(self):
         return self.student.university
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"Student: {self.full_name} ({self.student_code})"
 
 
-def _load_principal(student_id):
+def _load_principal(student_id: str) -> Optional[StudentPrincipal]:
     """Личность студента: сначала кэш, при промахе — база.
 
     Возвращает (principal | None, from_cache: bool).
@@ -95,7 +97,7 @@ def _load_principal(student_id):
     return principal, False
 
 
-def _reload_principal_from_db(student_id):
+def _reload_principal_from_db(student_id: str) -> Optional[StudentPrincipal]:
     """Перечитывает личность в обход кэша.
 
     Нужно, когда версия в кэше не сошлась с токеном: запись могла устареть,
@@ -118,10 +120,10 @@ def _reload_principal_from_db(student_id):
 class CombinedJWTAuthentication(BaseAuthentication):
     """Различает студенческий JWT и админский SimpleJWT."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.simplejwt_auth = JWTAuthentication()
 
-    def authenticate(self, request):
+    def authenticate(self, request: Request) -> Optional[tuple[Any, None]]:
         header = request.headers.get('Authorization')
         if not header:
             return None
@@ -151,7 +153,7 @@ class CombinedJWTAuthentication(BaseAuthentication):
             logger.info("admin_token_rejected", exc_info=True)
             raise AuthenticationFailed(GENERIC_AUTH_ERROR)
 
-    def _authenticate_student(self, payload) -> StudentUserWrapper:
+    def _authenticate_student(self, payload: dict[str, Any]) -> StudentUserWrapper:
         student_id = payload.get('student_id')
         if not student_id:
             raise AuthenticationFailed(GENERIC_AUTH_ERROR)
@@ -171,7 +173,12 @@ class CombinedJWTAuthentication(BaseAuthentication):
 
         return StudentUserWrapper(principal)
 
-    def _verify_auth_version(self, principal, token_version, from_cache):
+    def _verify_auth_version(
+        self,
+        principal: StudentPrincipal,
+        token_version: Optional[int],
+        from_cache: bool,
+    ) -> StudentPrincipal:
         if token_version is None:
             # Токены, выпущенные до появления claim'а, обязаны дожить свой срок:
             # иначе обновление backend'а разлогинило бы всех разом (ТЗ п.19).

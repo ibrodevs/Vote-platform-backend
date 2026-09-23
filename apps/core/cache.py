@@ -9,8 +9,9 @@ Redis — ускоритель, а не источник истины. Ни од
 дают разные классы исключений, и уронить запрос не должен ни один из них.
 """
 import logging
+from typing import Any, Optional
 
-from django.core.cache import caches
+from django.core.cache import BaseCache, caches
 
 from apps.core import cache_keys
 
@@ -19,11 +20,11 @@ logger = logging.getLogger(__name__)
 _SENTINEL = object()
 
 
-def _cache():
+def _cache() -> BaseCache:
     return caches["default"]
 
 
-def safe_get(key, default=None):
+def safe_get(key: str, default: Any = None) -> Any:
     """Читает из кэша. При любой ошибке возвращает default."""
     try:
         value = _cache().get(key, _SENTINEL)
@@ -33,7 +34,7 @@ def safe_get(key, default=None):
     return default if value is _SENTINEL else value
 
 
-def safe_set(key, value, timeout=None) -> bool:
+def safe_set(key: str, value: Any, timeout: Optional[int] = None) -> bool:
     """Пишет в кэш. Возвращает True, если запись удалась."""
     try:
         _cache().set(key, value, timeout=timeout)
@@ -43,7 +44,7 @@ def safe_set(key, value, timeout=None) -> bool:
         return False
 
 
-def safe_delete(key) -> bool:
+def safe_delete(key: str) -> bool:
     """Удаляет запись. Возвращает True, если удаление прошло без ошибки.
 
     Неудача здесь означает, что устаревшее значение могло остаться в кэше.

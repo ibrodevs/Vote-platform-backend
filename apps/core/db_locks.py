@@ -28,10 +28,17 @@ Advisory-лок не привязан к строке, поэтому чтени
 import hashlib
 import logging
 import uuid as uuid_module
+from typing import Union
 
 from django.db import connection, transaction
 
 logger = logging.getLogger(__name__)
+
+# Идентификатор выборов приходит и как UUID (из модели), и как строка
+# (из тела запроса, из кэша). Ключ лока обязан быть одинаковым в обоих
+# случаях — иначе два воркера взяли бы разные локи и барьер завершения
+# выборов перестал бы работать. Нормализация — в advisory_lock_key.
+LockValue = Union[uuid_module.UUID, str]
 
 _SIGNED_BIGINT_OFFSET = 2 ** 63
 
@@ -41,7 +48,7 @@ def supports_advisory_locks() -> bool:
     return connection.vendor == "postgresql"
 
 
-def advisory_lock_key(namespace: str, value) -> int:
+def advisory_lock_key(namespace: str, value: LockValue) -> int:
     """Стабильный знаковый int64 из пространства имён и значения.
 
     Встроенный hash() не подходит: он рандомизирован между процессами
@@ -84,7 +91,7 @@ def _acquire(sql: str, key: int) -> None:
         cursor.execute(sql, [key])
 
 
-def election_vote_lock(election_id) -> None:
+def election_vote_lock(election_id: LockValue) -> None:
     """SHARED-лок выборов: берётся каждой транзакцией голосования.
 
     Несколько голосов одних выборов держат его одновременно — это и есть
@@ -98,7 +105,7 @@ def election_vote_lock(election_id) -> None:
     _acquire("SELECT pg_advisory_xact_lock_shared(%s)", advisory_lock_key("election", election_id))
 
 
-def election_state_lock(election_id) -> None:
+def election_state_lock(election_id: LockValue) -> None:
     """EXCLUSIVE-лок выборов: берётся start/finish/cancel/delete.
 
     Ждёт, пока завершатся уже начатые голоса, и не пускает новые в критическую
