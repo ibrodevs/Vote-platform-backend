@@ -172,24 +172,43 @@ docker compose -f docker-compose.prod.yml up -d --no-deps app  # предыду�
 
 ## 7. Резервное копирование
 
-Требование ТЗ п.47. Раздел будет дополнен на этапе 12 — здесь минимум,
-без которого нельзя запускаться.
+Требование ТЗ п.47. Полная процедура, включая восстановление на момент
+времени и действия при инцидентах — **[docs/RUNBOOK.md](RUNBOOK.md)**.
+Здесь только то, что нужно настроить при развёртывании.
 
 ```bash
-# Ежедневный дамп
-docker compose -f docker-compose.prod.yml exec -T postgres \
-  pg_dump -U "$DB_USER" -Fc "$DB_NAME" > "backup-$(date +%F).dump"
+# Ежедневный дамп. Скрипт отказывается считать успехом пустой файл
+# или файл, который не читается pg_restore.
+BACKUP_DIR=/mnt/backups ./scripts/backup.sh
 
-# ПРОВЕРКА восстановлением — обязательна. Бэкап, который не восстанавливали,
-# бэкапом не является.
-createdb restore_test
-pg_restore -d restore_test "backup-$(date +%F).dump"
-psql -d restore_test -c "SELECT count(*) FROM voting_voterecord;"
-dropdb restore_test
+# ПРОВЕРКА ВОССТАНОВЛЕНИЕМ — обязательна и регулярна.
+# Копия, из которой никто не восстанавливался, — это предположение,
+# а не резервная копия.
+./scripts/verify_backup.sh /mnt/backups/vote_db-<дата>.dump
+
+# Восстановление. Уничтожает текущую базу, поэтому требует подтверждения
+# и само снимает страховочную копию перед разрушением.
+./scripts/restore.sh /mnt/backups/vote_db-<дата>.dump
 ```
 
-Для PITR нужен `archive_mode=on` и архивация WAL — настраивается на уровне
-PostgreSQL или managed-сервиса.
+cron:
+
+```cron
+15 3 * * * cd /srv/vote-platform && BACKUP_DIR=/mnt/backups ./scripts/backup.sh >> /var/log/vote-backup.log 2>&1
+30 4 * * 0 cd /srv/vote-platform && ./scripts/verify_backup.sh "$(ls -t /mnt/backups/*.dump | head -1)" >> /var/log/vote-restore-test.log 2>&1
+```
+
+**Копии хранить не на том же диске, что база.** Отказ диска не должен
+уносить и данные, и их резервную копию.
+
+**WAL archiving обязателен.** Ежедневный дамп теряет всё, что произошло
+после него; в день выборов это потерянные голоса. Настройка `wal_level`,
+`archive_mode`, `archive_command` и процедура PITR — в
+[RUNBOOK](RUNBOOK.md#13-wal-archiving-и-pitr).
+
+Вся цепочка — бэкап, проверка, восстановление, подтверждение целостности —
+прогнана 2026-09-23 на реальных данных, включая разрушающий шаг.
+Зафиксированный вывод в RUNBOOK.
 
 ---
 
