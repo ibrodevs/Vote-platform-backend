@@ -2,6 +2,7 @@ from django.db.models import Count, Prefetch, Q
 from rest_framework import generics, permissions, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from apps.core.db_replica import eventual
 from .models import University
 from .serializers import UniversitySerializer, UniversityPublicSerializer
 from apps.core.cache_invalidation import invalidate_university
@@ -93,7 +94,11 @@ class UniversityAdminDetailView(generics.RetrieveUpdateDestroyAPIView):
 class UniversityPublicListView(generics.ListAPIView):
     permission_classes = [permissions.AllowAny]
     serializer_class = UniversityPublicSerializer
-    queryset = University.objects.filter(is_active=True).prefetch_related('faculties').order_by('name')
+    # Справочник вузов меняется редко и к голосованию отношения не имеет:
+    # отставание реплики здесь безопасно (ТЗ п.46).
+    queryset = eventual(
+        University.objects.filter(is_active=True).prefetch_related('faculties')
+    ).order_by('name')
     pagination_class = None
 
 class UniversityPublicDetailByCodeView(APIView):

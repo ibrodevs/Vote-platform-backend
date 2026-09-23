@@ -148,6 +148,10 @@ DB_CONN_MAX_AGE = int(os.getenv('DB_CONN_MAX_AGE', '0'))
 DB_BEHIND_PGBOUNCER = os.getenv('DB_BEHIND_PGBOUNCER', 'False').strip().lower() == 'true'
 DB_CONNECT_TIMEOUT = int(os.getenv('DB_CONNECT_TIMEOUT', '10'))
 
+# Роутер не выбирает базу для чтения — он запрещает записи и миграции
+# на реплике. Подробности: config/db_router.py.
+DATABASE_ROUTERS = ['config.db_router.PrimaryWriteRouter']
+
 if DB_ENGINE == 'postgresql':
     DATABASES = {
         'default': {
@@ -164,6 +168,23 @@ if DB_ENGINE == 'postgresql':
             },
         }
     }
+    # Реплика чтения (ТЗ п.46). Alias появляется ТОЛЬКО когда задан
+    # DB_REPLICA_HOST: без него система работает ровно как раньше, с одной
+    # базой, и ни один запрос не может случайно уйти на отстающую копию.
+    #
+    # Какие чтения допустимо отправлять на реплику, решает apps/core/db_replica.py
+    # — явной пометкой, а не автоматическим роутингом. Причина там же.
+    if os.getenv('DB_REPLICA_HOST'):
+        DATABASES['replica'] = {
+            **DATABASES['default'],
+            'HOST': os.getenv('DB_REPLICA_HOST'),
+            'PORT': os.getenv('DB_REPLICA_PORT', os.getenv('DB_PORT', '5432')),
+            # Реплика PostgreSQL физически доступна только для чтения.
+            # TEST.MIRROR говорит Django не создавать для неё отдельную
+            # тестовую базу: иначе тесты пытались бы её мигрировать.
+            'TEST': {'MIRROR': 'default'},
+        }
+
 elif DB_ENGINE == 'mysql':
     # Только локальная разработка. В production отвергается проверкой выше.
     DATABASES = {
