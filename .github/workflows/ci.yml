@@ -76,3 +76,30 @@ jobs:
 
       - name: Run tests
         run: python manage.py test -v 2
+
+      - name: Concurrency tests on PostgreSQL
+        # Прогоняются отдельно и с повышенным параллелизмом: они и есть
+        # доказательство, что двойной голос невозможен (ТЗ п.72-75, 107).
+        # На SQLite такой прогон ничего не доказывал бы — там нет
+        # advisory locks и другая модель блокировок.
+        env:
+          CONCURRENCY_MAX_WORKERS: "60"
+        run: python manage.py test tests.concurrency apps.voting -v 2
+
+      - name: Production configuration check
+        # Проверяет ту же конфигурацию, что уйдёт в production: забытая
+        # переменная окружения не должна обнаруживаться на боевом сервере
+        # (ТЗ п.102, 103). Здесь задаются заведомо валидные значения —
+        # проверяется работоспособность самой проверки, а не CI-окружения.
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings
+          DJANGO_ENV: production
+          DJANGO_DEBUG: "False"
+          DJANGO_SECRET_KEY: ci-check-only-not-a-real-secret-key-48-bytes-long
+          DJANGO_ALLOWED_HOSTS: ci.example.org
+          DJANGO_CORS_ALLOWED_ORIGINS: https://ci.example.org
+          DB_BEHIND_PGBOUNCER: "True"
+          DB_CONN_MAX_AGE: "0"
+          REDIS_URL: redis://127.0.0.1:6379/1
+          DJANGO_MEDIA_SHARED: "True"
+        run: python manage.py production_check
