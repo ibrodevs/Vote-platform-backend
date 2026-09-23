@@ -162,6 +162,52 @@ def check_redis_configured():
     return _pass('redis', 'Redis настроен')
 
 
+def check_conn_max_age():
+    """Пара CONN_MAX_AGE + PgBouncer должна быть заявлена осознанно (этап 11).
+
+    Django не может определить, стоит ли перед ним пулер: PgBouncer выглядит
+    для него обычным сервером PostgreSQL. Поэтому ошибиться здесь легко, а
+    цена ошибки измерена на профиле записи голосов, одна и та же нагрузка:
+
+        CONN_MAX_AGE=0, без PgBouncer  → p95 364 мс, 847 запросов не уложились
+        CONN_MAX_AGE=60               → p95  13 мс,  18 запросов не уложились
+
+    Причина в том, что при CONN_MAX_AGE=0 Django закрывает соединение после
+    каждого запроса, и на каждый следующий PostgreSQL заново порождает
+    backend-процесс. Полезной работы в этом нет.
+
+    Обратная ошибка так же реальна: persistent-соединения Django за
+    PgBouncer в transaction pooling ломают пулинг — соединение закрепляется
+    за воркером, и пулер перестаёт делать то, ради чего поставлен.
+    """
+    conn_max_age = getattr(settings, 'DB_CONN_MAX_AGE', 0)
+    behind_pgbouncer = getattr(settings, 'DB_BEHIND_PGBOUNCER', False)
+
+    if behind_pgbouncer and conn_max_age != 0:
+        return _fail(
+            'conn_max_age_with_pgbouncer',
+            f'DB_BEHIND_PGBOUNCER=True вместе с DB_CONN_MAX_AGE={conn_max_age}',
+            'За PgBouncer в transaction pooling соединения Django обязаны быть '
+            'короткоживущими. Установите DB_CONN_MAX_AGE=0.',
+        )
+
+    if not behind_pgbouncer and conn_max_age == 0:
+        return _fail(
+            'conn_max_age_zero_without_pooler',
+            'DB_CONN_MAX_AGE=0 и PgBouncer не заявлен: новое соединение с '
+            'PostgreSQL на каждый запрос',
+            'Выберите одну схему. Либо DB_CONN_MAX_AGE=60 (или другое ненулевое '
+            'значение), если приложение ходит в PostgreSQL напрямую. Либо '
+            'DB_BEHIND_PGBOUNCER=True, если перед базой стоит пулер. '
+            'Измерено на профиле записи: неверная пара дала p95 364 мс '
+            'против 13 мс на той же нагрузке.',
+        )
+
+    if behind_pgbouncer:
+        return _pass('conn_max_age', 'PgBouncer заявлен, CONN_MAX_AGE=0 — верно')
+    return _pass('conn_max_age', f'Прямое подключение, CONN_MAX_AGE={conn_max_age}')
+
+
 ALL_CHECKS = (
     check_debug,
     check_secret_key,
@@ -173,6 +219,7 @@ ALL_CHECKS = (
     check_clickjacking,
     check_ssl_settings,
     check_redis_configured,
+    check_conn_max_age,
     check_migrations,
 )
 

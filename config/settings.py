@@ -134,7 +134,18 @@ if IS_PRODUCTION and DB_ENGINE != 'postgresql':
 
 # CONN_MAX_AGE=0 по умолчанию осознанно: за PgBouncer в transaction pooling
 # persistent-соединения Django вредны. Значение настраивается на этапе 7.
+#
+# Этап 11 измерил, чего стоит ошибиться с этой парой настроек. Без PgBouncer
+# и с CONN_MAX_AGE=0 каждый HTTP-запрос открывает новое соединение с
+# PostgreSQL: профиль записи голосов дал p95 364 мс против 13 мс при
+# CONN_MAX_AGE=60 на той же нагрузке. Поэтому развёртывание обязано явно
+# заявить одну из двух схем — см. check_conn_max_age в apps/core/system_checks.py.
 DB_CONN_MAX_AGE = int(os.getenv('DB_CONN_MAX_AGE', '0'))
+
+# Явное заявление о том, что перед PostgreSQL стоит PgBouncer в режиме
+# transaction pooling. Определить автоматически нельзя: для Django пулер
+# выглядит обычным сервером PostgreSQL.
+DB_BEHIND_PGBOUNCER = os.getenv('DB_BEHIND_PGBOUNCER', 'False').strip().lower() == 'true'
 DB_CONNECT_TIMEOUT = int(os.getenv('DB_CONNECT_TIMEOUT', '10'))
 
 if DB_ENGINE == 'postgresql':
