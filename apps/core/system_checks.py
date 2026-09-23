@@ -208,6 +208,55 @@ def check_conn_max_age():
     return _pass('conn_max_age', f'Прямое подключение, CONN_MAX_AGE={conn_max_age}')
 
 
+def check_shared_cache():
+    """Кэш обязан быть общим для всех реплик приложения (ТЗ п.99).
+
+    LocMemCache живёт внутри процесса. С несколькими репликами это означает
+    не «медленнее», а «по-разному»: у каждой ноды свой кэш личности и свои
+    счётчики ограничения частоты. Студент, заблокированный на одной ноде,
+    свободно работает через другую, а отозванный токен продолжает
+    действовать там, где инвалидация не дошла.
+    """
+    backend = settings.CACHES.get('default', {}).get('BACKEND', '')
+    if 'locmem' in backend.lower():
+        return _fail(
+            'cache_not_shared',
+            'Кэш по умолчанию — LocMemCache, он локален для процесса',
+            'С несколькими репликами у каждой будет свой кэш и свои счётчики '
+            'ограничения частоты. Задайте REDIS_URL.',
+        )
+    if 'dummy' in backend.lower():
+        return _fail(
+            'cache_disabled',
+            'Кэш отключён (DummyCache)',
+            'Аутентификация пойдёт в PostgreSQL на каждый запрос. Задайте REDIS_URL.',
+        )
+    return _pass('cache_shared', f'Кэш общий для реплик: {backend.rsplit(".", 1)[-1]}')
+
+
+def check_media_storage():
+    """Медиафайлы не должны лежать на диске одной ноды (ТЗ п.99).
+
+    Загрузка, попавшая на первую реплику, не существует для второй:
+    пользователь увидит картинку через раз, в зависимости от того, куда
+    его направил балансировщик.
+
+    Общий сетевой диск — допустимое решение, но Django отличить его от
+    локального не может, поэтому такую схему нужно заявить явно.
+    """
+    if getattr(settings, 'AWS_STORAGE_BUCKET_NAME', ''):
+        return _pass('media_storage', 'Медиа в объектном хранилище')
+    if os.getenv('DJANGO_MEDIA_SHARED', 'False').strip().lower() == 'true':
+        return _pass('media_storage', 'Медиа на общем сетевом диске (заявлено явно)')
+    return _fail(
+        'media_storage_local',
+        'Медиафайлы хранятся на локальном диске ноды',
+        'При нескольких репликах загрузка, попавшая на одну ноду, не видна '
+        'остальным. Задайте AWS_STORAGE_BUCKET_NAME для объектного хранилища '
+        'либо DJANGO_MEDIA_SHARED=True, если каталог media общий для всех нод.',
+    )
+
+
 ALL_CHECKS = (
     check_debug,
     check_secret_key,
@@ -220,6 +269,8 @@ ALL_CHECKS = (
     check_ssl_settings,
     check_redis_configured,
     check_conn_max_age,
+    check_shared_cache,
+    check_media_storage,
     check_migrations,
 )
 
