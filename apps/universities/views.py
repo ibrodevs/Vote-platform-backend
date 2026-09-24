@@ -1,8 +1,11 @@
+from django.db.models import Count, Prefetch, Q
 from rest_framework import generics, permissions, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from apps.core.db_replica import eventual
 from .models import University
 from .serializers import UniversitySerializer, UniversityPublicSerializer
+from apps.core.cache_invalidation import invalidate_university
 from apps.core.permissions import IsSuperAdmin, IsAdminUserWithRole, IsNotObserver
 from apps.accounts.models import AdminActionLog
 
@@ -11,6 +14,21 @@ def get_client_ip(request):
     if x_forwarded_for:
         return x_forwarded_for.split(',')[0]
     return request.META.get('REMOTE_ADDR')
+
+def _university_queryset():
+    """Университеты со счётчиками и факультетами, посчитанными в базе.
+
+    filter=Q(...) внутри Count даёт условный счётчик без второго запроса;
+    distinct=True нужен потому, что два JOIN'а (students и elections)
+    перемножают строки.
+    """
+    return University.objects.prefetch_related('faculties').annotate(
+        students_count_annotated=Count('students', distinct=True),
+        active_elections_count_annotated=Count(
+            'elections', filter=Q(elections__status='active'), distinct=True
+        ),
+    )
+
 
 class UniversityAdminListCreateView(generics.ListCreateAPIView):
     serializer_class = UniversitySerializer
@@ -23,10 +41,10 @@ class UniversityAdminListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         user = self.request.user
         if getattr(user, 'role', None) == 'super_admin' or user.is_superuser:
-            return University.objects.all().order_by('name')
+            return _university_queryset().order_by('name')
         # University admin only sees their own
         if user.university:
-            return University.objects.filter(id=user.university.id)
+            return _university_queryset().filter(id=user.university.id)
         return University.objects.none()
 
     def perform_create(self, serializer):
@@ -42,7 +60,7 @@ class UniversityAdminListCreateView(generics.ListCreateAPIView):
 
 class UniversityAdminDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = UniversitySerializer
-    queryset = University.objects.all()
+    queryset = _university_queryset()
 
     def get_permissions(self):
         if self.request.method in ['DELETE']:
@@ -51,6 +69,7 @@ class UniversityAdminDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def perform_update(self, serializer):
         uni = serializer.save()
+        invalidate_university(uni.id)
         AdminActionLog.objects.create(
             admin=self.request.user,
             action="update_university",
@@ -75,7 +94,11 @@ class UniversityAdminDetailView(generics.RetrieveUpdateDestroyAPIView):
 class UniversityPublicListView(generics.ListAPIView):
     permission_classes = [permissions.AllowAny]
     serializer_class = UniversityPublicSerializer
-    queryset = University.objects.filter(is_active=True).order_by('name')
+    # Справочник вузов меняется редко и к голосованию отношения не имеет:
+    # отставание реплики здесь безопасно (ТЗ п.46).
+    queryset = eventual(
+        University.objects.filter(is_active=True).prefetch_related('faculties')
+    ).order_by('name')
     pagination_class = None
 
 class UniversityPublicDetailByCodeView(APIView):

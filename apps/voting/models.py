@@ -1,8 +1,22 @@
 import uuid
 from django.db import models
+
 from apps.elections.models import Election
 from apps.students.models import Student
 from apps.candidates.models import Candidate
+
+# ==============================================================================
+# ИНВАРИАНТЫ ТАЙНОГО ГОЛОСОВАНИЯ — НЕ НАРУШАТЬ (ТЗ п.3, 106)
+# ==============================================================================
+# DO NOT add student relation to Ballot
+# DO NOT add candidate relation to VoteRecord
+# DO NOT add a FK between Ballot and VoteRecord in either direction
+# DO NOT replace database uniqueness with a cache check
+# DO NOT move the core vote commit to an asynchronous queue
+#
+# Разделение этих двух таблиц — единственное, что обеспечивает тайну голосования.
+# Любая связь между ними восстанавливает пару "студент -> кандидат".
+# ==============================================================================
 
 class VoteRecord(models.Model):
     """
@@ -27,13 +41,23 @@ class VoteRecord(models.Model):
     class Meta:
         verbose_name = "Факт участия в голосовании"
         verbose_name_plural = "Факты участия в голосовании"
-        unique_together = ('election', 'student')
-        indexes = [
-            models.Index(fields=['election', 'student']),
+        constraints = [
+            # Последняя линия защиты от двойного голосования (ТЗ п.6).
+            # Именно база, а не Python-проверка: проверка exists() проигрывает
+            # гонке, констрейнт — нет. Имя задано явно, чтобы отличать причину
+            # IntegrityError в apps/voting/services.py.
+            models.UniqueConstraint(
+                fields=['election', 'student'],
+                name='uniq_voterecord_election_student',
+            ),
         ]
+        # Отдельный Index(election, student) не нужен: UNIQUE уже создаёт
+        # B-tree индекс по этой паре, второй только замедлял бы записи (ТЗ п.14).
 
     def __str__(self):
-        return f"Студент {self.student.student_id} проголосовал в {self.election.title}"
+        # Без студента: __str__ попадает в админку, логи и трейсбеки.
+        # Пара "кто участвовал" отдельно безопасна, но не стоит раздавать её даром.
+        return f"Участие в выборах {self.election_id}"
 
 class Ballot(models.Model):
     """
@@ -63,4 +87,6 @@ class Ballot(models.Model):
         ]
 
     def __str__(self):
-        return f"Анонимный голос за {self.candidate.full_name} в {self.election.title}"
+        # Без кандидата: строка бюллетеня рядом с записью об участии в одном
+        # логе восстанавливает выбор студента (ТЗ п.4).
+        return f"Бюллетень в выборах {self.election_id}"

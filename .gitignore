@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Django
+db.sqlite3
+db.sqlite3-journal
+*.log
+/media/
+/staticfiles/
+
+# Окружение
+.env
+.env.*
+!.env.example
+!.env.docker.example
+
+# Редакторы и ОС
+.DS_Store
+.idea/
+.vscode/
+
+# Нагрузочные тесты: файл содержит действующие JWT
+/loadtests/fixtures/
+/loadtests/results/

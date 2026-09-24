@@ -21,7 +21,20 @@ class ElectionSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'created_by', 'created_at', 'updated_at']
 
+    # Имя аннотации отличается от имени поля: иначе DRF прочитал бы аннотацию
+    # напрямую и SerializerMethodField потерял бы смысл.
+    CANDIDATES_COUNT_ANNOTATION = 'candidates_count_annotated'
+
     def get_candidates_count(self, obj):
+        """Читает аннотацию, подготовленную во вьюхе.
+
+        Fallback на .count() оставлен намеренно: сериализатор вызывают и вне
+        подготовленного queryset'а (например, после create/update одного
+        объекта), и падать там он не должен.
+        """
+        annotated = getattr(obj, self.CANDIDATES_COUNT_ANNOTATION, None)
+        if annotated is not None:
+            return annotated
         return obj.candidates.count()
 
     def to_representation(self, instance):

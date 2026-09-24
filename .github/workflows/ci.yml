@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    name: Tests on PostgreSQL
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: vote_db
+          POSTGRES_USER: vote_user
+          POSTGRES_PASSWORD: vote_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vote_user -d vote_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Тесты идут на PostgreSQL: SQLite не доказывает корректность (ТЗ п.107)
+      DJANGO_SETTINGS_MODULE: config.settings_test
+      DB_ENGINE: postgresql
+      DB_NAME: vote_db
+      DB_USER: vote_user
+      DB_PASSWORD: vote_password
+      DB_HOST: 127.0.0.1
+      DB_PORT: "5432"
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/0
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/0
+      DJANGO_SECRET_KEY: ci-only-insecure-key
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv pip install --system -r requirements.txt
+
+      - name: Django system check
+        run: python manage.py check
+
+      - name: Migrations are up to date
+        # ТЗ п.69: несозданная миграция не должна проходить в main
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: Apply migrations
+        run: python manage.py migrate --noinput
+
+      - name: Data audit command runs
+        run: python manage.py audit_db_data
+
+      - name: Run tests
+        run: python manage.py test -v 2
+
+      - name: Concurrency tests on PostgreSQL
+        # Прогоняются отдельно и с повышенным параллелизмом: они и есть
+        # доказательство, что двойной голос невозможен (ТЗ п.72-75, 107).
+        # На SQLite такой прогон ничего не доказывал бы — там нет
+        # advisory locks и другая модель блокировок.
+        env:
+          CONCURRENCY_MAX_WORKERS: "60"
+        run: python manage.py test tests.concurrency apps.voting -v 2
+
+      - name: Production configuration check
+        # Проверяет ту же конфигурацию, что уйдёт в production: забытая
+        # переменная окружения не должна обнаруживаться на боевом сервере
+        # (ТЗ п.102, 103). Здесь задаются заведомо валидные значения —
+        # проверяется работоспособность самой проверки, а не CI-окружения.
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings
+          DJANGO_ENV: production
+          DJANGO_DEBUG: "False"
+          DJANGO_SECRET_KEY: ci-check-only-not-a-real-secret-key-48-bytes-long
+          DJANGO_ALLOWED_HOSTS: ci.example.org
+          DJANGO_CORS_ALLOWED_ORIGINS: https://ci.example.org
+          DB_BEHIND_PGBOUNCER: "True"
+          DB_CONN_MAX_AGE: "0"
+          REDIS_URL: redis://127.0.0.1:6379/1
+          DJANGO_MEDIA_SHARED: "True"
+        run: python manage.py production_check

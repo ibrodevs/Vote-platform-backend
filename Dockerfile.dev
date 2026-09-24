@@ -1,0 +1,30 @@
+# Образ для ЛОКАЛЬНОЙ РАЗРАБОТКИ.
+# Production-образ (multi-stage, gunicorn, без runserver) делается на этапе 7 — ТЗ п.37, 57.
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# libpq5 нужен psycopg в рантайме; сборочные пакеты не тянем — ставим psycopg[binary]
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libpq5 \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Зависимости отдельным слоем — не пересобираются при каждом изменении кода
+COPY requirements.txt /app/
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Non-root пользователь
+RUN useradd --create-home --uid 1000 appuser \
+    && mkdir -p /app/media /app/staticfiles \
+    && chown -R appuser:appuser /app
+USER appuser
+
+COPY --chown=appuser:appuser . /app/
+
+EXPOSE 8000
+
+CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]

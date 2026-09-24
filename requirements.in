@@ -1,0 +1,23 @@
+# Прямые зависимости проекта.
+# Запиненный набор — в requirements.txt.
+# Пересборка: uv pip compile requirements.in -o requirements.txt
+
+django>=5.2,<6.0
+djangorestframework>=3.16
+djangorestframework-simplejwt>=5.5
+django-cors-headers>=4.9
+django-filter>=25.1
+
+# ТЗ п.12: официальный драйвер PostgreSQL, production работает только на нём
+psycopg[binary]>=3.2
+
+openpyxl>=3.1
+celery>=5.5
+redis>=5.0
+pillow>=11.0
+gunicorn>=23.0            # ТЗ п.37: production application server вместо runserver
+django-storages[s3]>=1.14 # ТЗ п.31: вынос медиа в object storage
+prometheus-client>=0.21   # ТЗ п.62: метрики
+whitenoise>=6.6
+python-dotenv>=1.0
+PyJWT>=2.9

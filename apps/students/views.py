@@ -2,6 +2,8 @@ import io
 import datetime
 import jwt
 from django.conf import settings
+from django.db import IntegrityError, transaction
+from django.db.models import Count, F, Max
 from django.utils import timezone
 from django.http import HttpResponse
 from rest_framework import generics, permissions, status
@@ -9,7 +11,9 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework.filters import SearchFilter, OrderingFilter
+from rest_framework.filters import OrderingFilter
+
+from apps.core.filters import MinLengthSearchFilter
 
 from django.contrib.auth.hashers import make_password, check_password
 from .models import Student, UploadBatch, StudentAuthSession
@@ -23,6 +27,7 @@ from .tasks import process_student_upload_batch
 from apps.universities.models import University
 from apps.accounts.models import AdminActionLog
 from apps.core.permissions import IsAdminUserWithRole, IsUniversityAdmin, IsStudentAuthenticated, IsNotObserver
+from apps.core.throttling import AuthAttemptThrottle, OtpVerifyThrottle
 
 def get_client_ip(request):
     x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
@@ -34,6 +39,7 @@ def get_client_ip(request):
 
 class StudentIdentifyView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [AuthAttemptThrottle]
 
     def post(self, request):
         serializer = StudentIdentifySerializer(data=request.data)
@@ -68,7 +74,7 @@ class StudentIdentifyView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        auth_session = send_student_otp(student, phone_input)
+        auth_session, raw_code = send_student_otp(student, phone_input)
 
         response_data = {
             "request_id": str(auth_session.id),
@@ -76,14 +82,18 @@ class StudentIdentifyView(APIView):
             "expires_in_seconds": int((auth_session.expires_at - timezone.now()).total_seconds())
         }
 
-        # Include demo code in debug mode
+        # Код возвращается только в режиме разработки. В базе он хранится
+        # хэшем, поэтому получить его иначе неоткуда (ТЗ п.34).
         if settings.DEBUG:
-            response_data["demo_code"] = auth_session.code
+            response_data["demo_code"] = raw_code
 
         return Response(response_data, status=status.HTTP_200_OK)
 
 class StudentVerifyView(APIView):
     permission_classes = [permissions.AllowAny]
+    # Перебор кода — самый привлекательный сценарий: счётчик попыток
+    # в сессии ограничивает перебор одного кода, этот лимит — по многим.
+    throttle_classes = [OtpVerifyThrottle]
 
     def post(self, request):
         serializer = StudentVerifySerializer(data=request.data)
@@ -119,18 +129,38 @@ class StudentVerifyView(APIView):
                 status=status.HTTP_429_TOO_MANY_REQUESTS
             )
 
-        auth_session.attempts += 1
-        auth_session.save(update_fields=['attempts'])
+        # ТЗ п.35: неатомарный инкремент терял попытки при параллельных
+        # запросах — перебор кода обходил лимит, запуская проверки пачками.
+        StudentAuthSession.objects.filter(pk=auth_session.pk).update(
+            attempts=F('attempts') + 1
+        )
+        auth_session.refresh_from_db(fields=['attempts'])
 
-        if auth_session.code != code_input:
+        if not auth_session.check_code(code_input):
             return Response(
                 {"error": {"code": "invalid_code", "message": f"Неверный код. Осталось попыток: {settings.SMS_MAX_ATTEMPTS - auth_session.attempts}"}},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Code is correct
-        auth_session.is_verified = True
-        auth_session.save(update_fields=['is_verified'])
+        # Код верен. Пометка «использована» делается условным UPDATE:
+        # два параллельных запроса с верным кодом иначе оба прошли бы
+        # проверку is_verified выше и оба выдали бы токен (ТЗ п.35).
+        claimed = StudentAuthSession.objects.filter(
+            pk=auth_session.pk, is_verified=False
+        ).update(is_verified=True)
+        if not claimed:
+            return Response(
+                {"error": {"code": "already_verified", "message": "Данный код уже был использован"}},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # D-01: раньше метод заканчивался здесь без return, DRF получал None
+        # и поднимал AssertionError -> 500. Весь OTP-вход был нерабочим,
+        # хотя фронтенд (app/vote/[code]/verify) его использует.
+        return Response(
+            build_student_auth_response(auth_session.student, request),
+            status=status.HTTP_200_OK,
+        )
 
 def create_student_token(student):
     exp_time = timezone.now() + datetime.timedelta(days=7)
@@ -144,8 +174,43 @@ def create_student_token(student):
     }
     return jwt.encode(payload, settings.SECRET_KEY, algorithm='HS256')
 
+def build_student_auth_response(student, request=None):
+    """Единое тело ответа для register, login и verify.
+
+    Вынесено, чтобы три точки выдачи токена не разъезжались: фронтенд
+    одинаково разбирает ответ всех трёх (lib/api.ts).
+    """
+    photo_url = None
+    if student.photo:
+        try:
+            photo_url = request.build_absolute_uri(student.photo.url) if request else student.photo.url
+        except Exception:
+            photo_url = None
+
+    return {
+        "student_token": create_student_token(student),
+        "student": {
+            "id": str(student.id),
+            "student_id": student.student_id,
+            "full_name": student.full_name,
+            "email": student.email,
+            "photo": photo_url,
+            "group": student.group,
+            "faculty": student.faculty,
+            "course": student.course,
+        },
+        "university": {
+            "id": str(student.university.id),
+            "name": student.university.name,
+            "name_ky": student.university.name_ky,
+            "code": student.university.code,
+        },
+    }
+
+
 class StudentRegisterView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [AuthAttemptThrottle]
 
     def post(self, request):
         serializer = StudentRegisterSerializer(data=request.data)
@@ -175,16 +240,29 @@ class StudentRegisterView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        student = Student.objects.create(
-            university=university,
-            full_name=data['full_name'].strip(),
-            faculty=data.get('faculty', '').strip(),
-            course=data['course'],
-            group=data['group'].strip(),
-            email=email,
-            password=make_password(data['password']),
-            is_active=True
-        )
+        # Проверка exists() выше — быстрый путь для обычного случая, но она
+        # проигрывает гонке: два параллельных запроса пройдут её одновременно.
+        # Последняя линия защиты — UNIQUE-констрейнт по LOWER(email) (ТЗ п.15).
+        # Его срабатывание обязано выглядеть для клиента так же, как проверка,
+        # а не как 500.
+        try:
+            with transaction.atomic():
+                student = Student.objects.create(
+                    university=university,
+                    full_name=data['full_name'].strip(),
+                    faculty=data.get('faculty', '').strip(),
+                    course=data['course'],
+                    group=data['group'].strip(),
+                    email=email,
+                    password=make_password(data['password']),
+                    is_active=True
+                )
+        except IntegrityError:
+            return Response(
+                {"error": {"code": "email_already_exists",
+                           "message": "Студент с таким email уже зарегистрирован. Пожалуйста, выполните вход."}},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         token = create_student_token(student)
 
@@ -210,6 +288,7 @@ class StudentRegisterView(APIView):
 
 class StudentPasswordLoginView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [AuthAttemptThrottle]
 
     def post(self, request):
         serializer = StudentPasswordLoginSerializer(data=request.data)
@@ -308,7 +387,7 @@ class StudentProfileView(APIView):
 class AdminUniversityStudentsListView(generics.ListCreateAPIView):
     permission_classes = [IsAdminUserWithRole]
     serializer_class = StudentSerializer
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filter_backends = [DjangoFilterBackend, MinLengthSearchFilter, OrderingFilter]
     filterset_fields = ['faculty', 'course', 'is_active']
     search_fields = ['student_id', 'full_name', 'phone_number', 'email', 'faculty']
     ordering_fields = ['full_name', 'student_id', 'course', 'created_at']
@@ -332,6 +411,15 @@ class AdminUniversityStudentsListView(generics.ListCreateAPIView):
         if only_registered and only_registered.lower() in ['true', '1', 'yes']:
             qs = qs.exclude(password='').exclude(password__isnull=True)
 
+        # Аннотации вместо prefetch_related: сериализатору нужны только
+        # количество и последняя дата, сами строки голосований не нужны.
+        # distinct=True обязателен — фильтр по ?voted= делает JOIN,
+        # и без него строки задвоились бы (ТЗ п.26).
+        qs = qs.select_related('university').annotate(
+            votes_count_annotated=Count('vote_records', distinct=True),
+            last_voted_at_annotated=Max('vote_records__voted_at'),
+        )
+
         voted_param = self.request.query_params.get('voted')
         if voted_param is not None:
             if voted_param.lower() in ['true', '1', 'yes']:
@@ -339,7 +427,7 @@ class AdminUniversityStudentsListView(generics.ListCreateAPIView):
             elif voted_param.lower() in ['false', '0', 'no']:
                 qs = qs.filter(vote_records__isnull=True).distinct()
 
-        return qs.prefetch_related('vote_records')
+        return qs
 
     def perform_create(self, serializer):
         uni_id = self.kwargs.get('university_id')

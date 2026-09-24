@@ -26,10 +26,21 @@ class UniversitySerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'created_at']
 
+    # Два условных счётчика считаются одной агрегацией во вьюхе, а не двумя
+    # запросами на каждый университет списка (ТЗ п.26).
+    STUDENTS_COUNT_ANNOTATION = 'students_count_annotated'
+    ACTIVE_ELECTIONS_ANNOTATION = 'active_elections_count_annotated'
+
     def get_students_count(self, obj):
+        annotated = getattr(obj, self.STUDENTS_COUNT_ANNOTATION, None)
+        if annotated is not None:
+            return annotated
         return obj.students.count()
 
     def get_active_elections_count(self, obj):
+        annotated = getattr(obj, self.ACTIVE_ELECTIONS_ANNOTATION, None)
+        if annotated is not None:
+            return annotated
         return obj.elections.filter(status='active').count()
 
     def create(self, validated_data):

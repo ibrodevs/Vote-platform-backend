@@ -29,23 +29,32 @@ def generate_otp_code() -> str:
     return f"{random.randint(100000, 999999)}"
 
 def send_student_otp(student, phone_number: str):
-    """
-    Creates an authentication session and sends OTP via SMS.
-    Returns the created StudentAuthSession instance.
+    """Создаёт сессию подтверждения и отправляет код.
+
+    Возвращает кортеж (session, raw_code). Открытый код нужен вызывающему
+    только для demo-режима; в базе он не хранится и в логи не попадает.
     """
     code = generate_otp_code()
     expires_at = timezone.now() + timedelta(minutes=getattr(settings, 'SMS_OTP_EXPIRY_MINUTES', 10))
 
-    session = StudentAuthSession.objects.create(
+    session = StudentAuthSession(
         student=student,
         phone_number=phone_number,
-        code=code,
-        expires_at=expires_at
+        expires_at=expires_at,
+    )
+    # Код хэшируется сразу: в базу он в открытом виде не попадает (ТЗ п.34)
+    session.set_code(code)
+    session.save()
+
+    # В production здесь вызов SMS-шлюза.
+    #
+    # КОД НЕ ЛОГИРУЕТСЯ И НЕ ПЕЧАТАЕТСЯ. Раньше он уходил и в logger.info,
+    # и в print вместе с телефоном и student_id: любой, у кого есть доступ
+    # к логам, мог войти под этим студентом. В dev-режиме код возвращается
+    # в HTTP-ответе — этого достаточно для разработки и не оставляет следов.
+    logger.info(
+        "otp_dispatched session_id=%s phone_suffix=%s",
+        session.id, phone_number[-2:] if phone_number else '',
     )
 
-    # In production, call SMS gateway (e.g. Twilio, SMS.kg, etc.)
-    # In development/mock mode, log to console
-    logger.info(f"===> [SMS DISPATCH] Sent OTP code {code} to {phone_number} for student {student.student_id} (Session: {session.id})")
-    print(f"\n[DEMO SMS CODE] Code for {student.full_name} ({phone_number}): {code}\n")
-
-    return session
+    return session, code

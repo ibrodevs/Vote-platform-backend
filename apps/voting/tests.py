@@ -1,5 +1,6 @@
 import concurrent.futures
 from datetime import timedelta
+from django.db import connection
 from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 from apps.universities.models import University
@@ -112,6 +113,10 @@ class SecretBallotVotingServiceTest(TransactionTestCase):
                 results.append(res)
             except Exception as e:
                 errors.append(e)
+            finally:
+                # Каждый поток открывает собственное соединение. На PostgreSQL
+                # незакрытые соединения не дают удалить тестовую базу в teardown.
+                connection.close()
 
         # Run 5 concurrent threads
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:

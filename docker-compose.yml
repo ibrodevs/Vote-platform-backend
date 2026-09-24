@@ -1,0 +1,110 @@
+# Локальное окружение разработки, максимально близкое к production (ТЗ п.58).
+# Concurrency-тесты нельзя проверять на SQLite — нужен настоящий PostgreSQL.
+#
+#   docker compose up --build
+#   docker compose exec web python manage.py migrate
+#   docker compose exec web python manage.py test
+#
+# Production-конфигурация (gunicorn, nginx, PgBouncer) — этап 7.
+#
+# БЕЗОПАСНОСТЬ: все порты публикуются только на 127.0.0.1. В этом файле
+# намеренно слабые dev-пароли и Redis без аутентификации, поэтому сервисы
+# не должны быть доступны из локальной сети. Не убирайте префикс 127.0.0.1
+# и не используйте этот compose для чего-либо, кроме localhost-разработки.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    # max_connections поднят ради concurrency-тестов: каждый поток открывает
+    # собственное соединение, и на дефолтных 100 параллелизм упирается
+    # в базу раньше, чем в проверяемую логику.
+    # pg_stat_statements: без него этап 11 нечем измерять — это единственный
+    # способ увидеть, какие запросы реально съедают время базы, а не догадываться.
+    # Требует shared_preload_libraries, то есть перезапуска контейнера.
+    command:
+      - "postgres"
+      - "-c"
+      - "max_connections=300"
+      - "-c"
+      - "shared_preload_libraries=pg_stat_statements"
+      - "-c"
+      - "pg_stat_statements.track=all"
+    environment:
+      POSTGRES_DB: ${DB_NAME:-vote_db}
+      POSTGRES_USER: ${DB_USER:-vote_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-vote_password}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Привязка к 127.0.0.1: база не должна быть видна из локальной сети.
+    # Без явного адреса Docker публикует порт на 0.0.0.0.
+    ports:
+      - "127.0.0.1:${DB_PORT_HOST:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-vote_user} -d ${DB_NAME:-vote_db}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    # Redis здесь без пароля — поэтому только 127.0.0.1.
+    ports:
+      - "127.0.0.1:${REDIS_PORT_HOST:-6380}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    environment: &django_env
+      DJANGO_ENV: development
+      DJANGO_DEBUG: "True"
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-only-insecure-key}
+      DB_ENGINE: postgresql
+      DB_NAME: ${DB_NAME:-vote_db}
+      DB_USER: ${DB_USER:-vote_user}
+      DB_PASSWORD: ${DB_PASSWORD:-vote_password}
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      REDIS_URL: redis://redis:6379/1
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      # Реальный worker, а не синхронное выполнение в web-процессе (ТЗ п.40)
+      CELERY_TASK_ALWAYS_EAGER: "False"
+      # Нагрузочные прогоны измеряют приложение, а не троттлер (ТЗ п.36)
+      RATE_LIMIT_ENABLED: "${RATE_LIMIT_ENABLED:-False}"
+    volumes:
+      - .:/app
+      - media:/app/media
+    # runserver с DEBUG=True: наружу не выставляем ни при каких условиях.
+    ports:
+      - "127.0.0.1:${WEB_PORT_HOST:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    command: ["celery", "-A", "config", "worker", "-l", "info"]
+    environment: *django_env
+    volumes:
+      - .:/app
+      - media:/app/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  media:

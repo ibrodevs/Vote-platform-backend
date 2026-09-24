@@ -5,6 +5,9 @@ from django.conf.urls.static import static
 from django.views.static import serve
 from django.http import JsonResponse
 
+from apps.core import health as core_health
+from apps.core.views_metrics import metrics_view
+
 def api_root(request):
     return JsonResponse({
         'status': 'online',
@@ -29,9 +32,17 @@ urlpatterns = [
     path('', api_root, name='api-root'),
     path('api/', api_root, name='api-index'),
     path('api/health/', health_check, name='health-check'),
+    # ТЗ п.43. Существующий /api/health/ сохранён для совместимости.
+    path('health/live', core_health.liveness, name='health-live'),
+    path('health/ready', core_health.readiness, name='health-ready'),
+    # Наружу не выставляется: ограничивается токеном и сетью на Nginx
+    path('metrics', metrics_view, name='metrics'),
 
-    # Django Admin
-    path('admin-django/', admin.site.urls),
+    # Django Admin (ТЗ п.98). Путь задаётся окружением: стандартный адрес
+    # находят автоматические сканеры за минуты. Это не защита сама по себе,
+    # а способ убрать админку из общего шума — настоящая защита
+    # (VPN, ограничение по IP) делается на уровне Nginx.
+    path(f'{settings.DJANGO_ADMIN_PATH}/', admin.site.urls),
 
     # Version 1 API
     path('api/v1/auth/', include('apps.accounts.urls')),

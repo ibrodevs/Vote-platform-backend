@@ -3,7 +3,10 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework.filters import SearchFilter, OrderingFilter
+from rest_framework.filters import OrderingFilter
+
+from apps.core.db_replica import eventual
+from apps.core.filters import MinLengthSearchFilter
 from django.db.models import F
 
 from .models import NewsArticle, FAQItem, StaticPage
@@ -54,7 +57,7 @@ class AdminNewsListCreateView(generics.ListCreateAPIView):
     permission_classes = [CanManageNews]
     serializer_class = NewsArticleSerializer
     parser_classes = [MultiPartParser, FormParser, JSONParser]
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filter_backends = [DjangoFilterBackend, MinLengthSearchFilter, OrderingFilter]
     filterset_fields = ['category', 'is_published']
     search_fields = ['title', 'title_ky', 'summary', 'content']
     ordering_fields = ['published_at', 'created_at', 'views', 'title']
@@ -107,7 +110,7 @@ class AdminNewsDetailView(generics.RetrieveUpdateDestroyAPIView):
 class AdminFAQListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsSuperAdmin]
     serializer_class = FAQItemSerializer
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filter_backends = [DjangoFilterBackend, MinLengthSearchFilter, OrderingFilter]
     filterset_fields = ['is_active']
     search_fields = ['question', 'question_ky', 'answer', 'answer_ky']
     ordering_fields = ['order', 'created_at']
@@ -157,20 +160,26 @@ class AdminFAQDetailView(generics.RetrieveUpdateDestroyAPIView):
 class PublicNewsListView(generics.ListAPIView):
     permission_classes = [permissions.AllowAny]
     serializer_class = NewsArticleSerializer
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filter_backends = [DjangoFilterBackend, MinLengthSearchFilter, OrderingFilter]
     filterset_fields = ['category']
     search_fields = ['title', 'title_ky', 'summary', 'summary_ky', 'content', 'content_ky']
     ordering_fields = ['published_at', 'views']
     ordering = ['-published_at']
 
     def get_queryset(self):
-        return NewsArticle.objects.filter(is_published=True).select_related('created_by')
+        # Новость, устаревшая на секунды, никого не затрагивает и никак
+        # не связана с голосованием — безопасно читать с реплики (ТЗ п.46).
+        return eventual(
+            NewsArticle.objects.filter(is_published=True).select_related('created_by')
+        )
 
 class PublicRecentNewsView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
-        articles = NewsArticle.objects.filter(is_published=True).select_related('created_by').order_by('-published_at')[:3]
+        articles = eventual(
+            NewsArticle.objects.filter(is_published=True).select_related('created_by')
+        ).order_by('-published_at')[:3]
         serializer = NewsArticleSerializer(articles, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -192,7 +201,8 @@ class PublicFAQListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        return FAQItem.objects.filter(is_active=True).order_by('order', 'created_at')
+        # Справочный текст: отставание реплики безвредно (ТЗ п.46).
+        return eventual(FAQItem.objects.filter(is_active=True)).order_by('order', 'created_at')
 
 # --- Admin Static Pages (Super Admin Only) ---
 
@@ -224,6 +234,6 @@ class AdminStaticPageDetailView(generics.RetrieveUpdateAPIView):
 class PublicStaticPageDetailView(generics.RetrieveAPIView):
     permission_classes = [permissions.AllowAny]
     serializer_class = StaticPageSerializer
-    queryset = StaticPage.objects.filter(is_published=True)
+    queryset = eventual(StaticPage.objects.filter(is_published=True))
     lookup_field = 'slug'
 
