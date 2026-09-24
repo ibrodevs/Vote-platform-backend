@@ -103,3 +103,27 @@ jobs:
           REDIS_URL: redis://127.0.0.1:6379/1
           DJANGO_MEDIA_SHARED: "True"
         run: python manage.py production_check
+
+      - name: Bootstrap mode configuration check
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings
+          DJANGO_ENV: production
+          DEPLOYMENT_STAGE: bootstrap
+          DJANGO_DEBUG: "False"
+          DJANGO_SECRET_KEY: ci-check-only-not-a-real-secret-key-48-bytes-long
+          DJANGO_ALLOWED_HOSTS: 127.0.0.1
+          DJANGO_CORS_ALLOWED_ORIGINS: http://127.0.0.1
+          DB_BEHIND_PGBOUNCER: "True"
+          DB_CONN_MAX_AGE: "0"
+          REDIS_URL: redis://127.0.0.1:6379/1
+          DJANGO_MEDIA_SHARED: "True"
+        run: python manage.py production_check
+
+      - name: Validate Docker Compose production config
+        env:
+          DJANGO_SECRET_KEY: ci-check-only-not-a-real-secret-key-48-bytes-long
+          DB_PASSWORD: ci_password_123
+          REDIS_PASSWORD: ci_redis_password_123
+          DJANGO_ALLOWED_HOSTS: ci.example.org
+          DJANGO_CORS_ALLOWED_ORIGINS: https://ci.example.org
+        run: docker compose -f docker-compose.prod.yml config -q

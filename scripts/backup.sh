@@ -1,17 +1,27 @@
 #!/usr/bin/env bash
-# Резервная копия базы (ТЗ п.47).
+# ==============================================================================
+# Резервная копия базы PostgreSQL (ТЗ п.29, 47)
+# ==============================================================================
+# Формат: custom (-Fc) со сжатием.
+# Автоматически определяет запуск в Docker Compose или на хосте.
+# Поддерживает отправку на внешнее хранилище (S3 / Hetzner Storage Box).
 #
-# Формат custom (-Fc), а не plain SQL: он сжат, восстанавливается
-# параллельно и позволяет восстановить отдельные таблицы.
-#
-#   ./scripts/backup.sh                      # в ./backups
+# Запуск:
+#   ./scripts/backup.sh
 #   BACKUP_DIR=/mnt/backups ./scripts/backup.sh
-#
-# Скрипт отказывается считать успехом пустой или подозрительно маленький
-# файл: молча созданный нулевой дамп — худший вид бэкапа, потому что он
-# выглядит как сделанный.
+#   S3_BACKUP_BUCKET=s3://my-vote-backups ./scripts/backup.sh
+# ==============================================================================
 
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKEND_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+cd "${BACKEND_DIR}"
+
+# Загрузка .env если есть
+if [ -f .env ]; then
+    export $(grep -E '^(DB_NAME|DB_USER|DB_PASSWORD)=' .env | xargs -d '\n' 2>/dev/null || grep -E '^(DB_NAME|DB_USER|DB_PASSWORD)=' .env || true)
+fi
 
 DB_NAME="${DB_NAME:-vote_db}"
 DB_USER="${DB_USER:-vote_user}"
@@ -19,42 +29,79 @@ DB_HOST="${DB_HOST:-127.0.0.1}"
 DB_PORT="${DB_PORT:-5432}"
 BACKUP_DIR="${BACKUP_DIR:-./backups}"
 RETENTION_DAYS="${RETENTION_DAYS:-14}"
+S3_BACKUP_BUCKET="${S3_BACKUP_BUCKET:-}"
 
-# Минимальный правдоподобный размер дампа. База со схемой и без данных
-# уже весит десятки килобайт; всё, что меньше, — признак сбоя.
+# Минимальный правдоподобный размер дампа (схема + таблицы > 10 КБ)
 MIN_BYTES="${MIN_BYTES:-10240}"
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$BACKUP_DIR"
 TARGET="$BACKUP_DIR/${DB_NAME}-${STAMP}.dump"
 
-echo "Снимаю дамп ${DB_NAME} с ${DB_HOST}:${DB_PORT} -> ${TARGET}"
-pg_dump --format=custom --compress=6 --no-owner --no-privileges \
-        --host="$DB_HOST" --port="$DB_PORT" --username="$DB_USER" \
-        --dbname="$DB_NAME" --file="$TARGET"
+echo "=== Снятие резервной копии базы данных ==="
+echo "База: ${DB_NAME}, Назначение: ${TARGET}"
+
+# Определение способа запуска: через Docker Compose или напрямую
+if command -v docker >/dev/null 2>&1 && docker compose -f docker-compose.prod.yml ps postgres 2>/dev/null | grep -q "postgres"; then
+    echo "Используется контейнер docker compose postgres..."
+    docker compose -f docker-compose.prod.yml exec -T postgres \
+        pg_dump --format=custom --compress=6 --no-owner --no-privileges \
+                --username="${DB_USER}" --dbname="${DB_NAME}" > "$TARGET"
+else
+    echo "Используется локальный pg_dump (${DB_HOST}:${DB_PORT})..."
+    pg_dump --format=custom --compress=6 --no-owner --no-privileges \
+            --host="$DB_HOST" --port="$DB_PORT" --username="$DB_USER" \
+            --dbname="$DB_NAME" --file="$TARGET"
+fi
 
 SIZE="$(wc -c < "$TARGET" | tr -d ' ')"
 if [ "$SIZE" -lt "$MIN_BYTES" ]; then
-  echo "ОШИБКА: дамп ${SIZE} Б, меньше порога ${MIN_BYTES} Б. Бэкап НЕ создан." >&2
-  rm -f "$TARGET"
-  exit 1
+    echo "ОШИБКА: дамп ${SIZE} Б, меньше порога ${MIN_BYTES} Б. Бэкап НЕ создан." >&2
+    rm -f "$TARGET"
+    exit 1
 fi
 
-# Содержимое дампа читается заголовком: файл, который pg_restore не понимает,
-# бэкапом не является, каким бы большим он ни был.
-if ! pg_restore --list "$TARGET" > /dev/null 2>&1; then
-  echo "ОШИБКА: pg_restore не может прочитать ${TARGET}. Бэкап НЕ создан." >&2
-  rm -f "$TARGET"
-  exit 1
+# Проверка читаемости дампа через pg_restore
+if command -v pg_restore >/dev/null 2>&1; then
+    if ! pg_restore --list "$TARGET" > /dev/null 2>&1; then
+        echo "ОШИБКА: pg_restore не может прочитать ${TARGET}. Бэкап повреждён!" >&2
+        rm -f "$TARGET"
+        exit 1
+    fi
+elif command -v docker >/dev/null 2>&1 && docker compose -f docker-compose.prod.yml ps postgres 2>/dev/null | grep -q "postgres"; then
+    if ! docker compose -f docker-compose.prod.yml exec -T postgres pg_restore --list < "$TARGET" > /dev/null 2>&1; then
+        echo "ОШИБКА: pg_restore в контейнере не может прочитать ${TARGET}. Бэкап повреждён!" >&2
+        rm -f "$TARGET"
+        exit 1
+    fi
 fi
 
-echo "Готово: ${TARGET} (${SIZE} Б)"
+echo "Успешно: ${TARGET} (${SIZE} Б)"
 
+# ------------------------------------------------------------------------------
+# Копирование на внешнее хранилище (ТЗ п.29)
+# ------------------------------------------------------------------------------
+if [ -n "${S3_BACKUP_BUCKET}" ]; then
+    echo "Копирование дампа на внешнее хранилище: ${S3_BACKUP_BUCKET}..."
+    if command -v aws >/dev/null 2>&1; then
+        aws s3 cp "$TARGET" "${S3_BACKUP_BUCKET}/$(basename "$TARGET")"
+        echo "Дамп успешно скопирован в ${S3_BACKUP_BUCKET}"
+    elif command -v rclone >/dev/null 2>&1; then
+        rclone copy "$TARGET" "${S3_BACKUP_BUCKET}"
+        echo "Дамп успешно скопирован через rclone"
+    else
+        echo "ПРЕДУПРЕЖДЕНИЕ: S3_BACKUP_BUCKET задан, но aws-cli или rclone не установлены." >&2
+    fi
+fi
+
+# ------------------------------------------------------------------------------
+# Ротация локальных копий
+# ------------------------------------------------------------------------------
 if [ "$RETENTION_DAYS" -gt 0 ]; then
-  echo "Удаляю копии старше ${RETENTION_DAYS} дней"
-  find "$BACKUP_DIR" -name "${DB_NAME}-*.dump" -type f -mtime "+${RETENTION_DAYS}" -print -delete || true
+    echo "Удаление локальных копий старше ${RETENTION_DAYS} дней..."
+    find "$BACKUP_DIR" -name "${DB_NAME}-*.dump" -type f -mtime "+${RETENTION_DAYS}" -print -delete 2>/dev/null || true
 fi
 
 echo
-echo "Бэкап не считается сделанным, пока из него не восстановились."
+echo "Бэкап не считается проверенным, пока из него не восстановились."
 echo "Проверка: ./scripts/verify_backup.sh ${TARGET}"

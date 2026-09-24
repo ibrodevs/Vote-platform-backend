@@ -79,9 +79,15 @@ class IndividualCheckTest(SimpleTestCase):
     def test_allowall_frames_fails(self):
         self.assertFalse(system_checks.check_clickjacking().ok)
 
-    @override_settings(SESSION_COOKIE_SECURE=False, CSRF_COOKIE_SECURE=True)
+    @override_settings(SESSION_COOKIE_SECURE=False, CSRF_COOKIE_SECURE=True, DEPLOYMENT_STAGE='production', IS_BOOTSTRAP=False)
     def test_insecure_session_cookie_fails(self):
         self.assertFalse(system_checks.check_ssl_settings().ok)
+
+    @override_settings(SESSION_COOKIE_SECURE=False, CSRF_COOKIE_SECURE=False, DEPLOYMENT_STAGE='bootstrap', IS_BOOTSTRAP=True)
+    def test_bootstrap_mode_allows_insecure_cookies(self):
+        result = system_checks.check_ssl_settings()
+        self.assertTrue(result.ok)
+        self.assertEqual(result.code, 'secure_cookies_bootstrap')
 
     def test_every_failure_has_a_hint(self):
         """Сообщение без подсказки заставляет гадать, что чинить."""

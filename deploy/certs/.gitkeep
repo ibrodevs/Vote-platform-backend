@@ -1,0 +1,2 @@
+# Directory for SSL/TLS certificates (fullchain.pem, privkey.pem)
+# Real certificates must NEVER be committed to Git.

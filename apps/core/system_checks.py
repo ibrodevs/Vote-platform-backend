@@ -127,6 +127,13 @@ def check_clickjacking():
 
 
 def check_ssl_settings():
+    stage = getattr(settings, 'DEPLOYMENT_STAGE', 'production')
+    is_bootstrap = getattr(settings, 'IS_BOOTSTRAP', False) or stage == 'bootstrap'
+    if is_bootstrap:
+        return _pass(
+            'secure_cookies_bootstrap',
+            'Bootstrap-режим (HTTP over IP): проверка Secure-кук временно пропущена до подключения TLS'
+        )
     problems = []
     if not getattr(settings, 'SESSION_COOKIE_SECURE', False):
         problems.append('SESSION_COOKIE_SECURE')
