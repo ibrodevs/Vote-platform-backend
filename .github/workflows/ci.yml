@@ -126,7 +126,10 @@ jobs:
           REDIS_PASSWORD: ci_redis_password_123
           DJANGO_ALLOWED_HOSTS: ci.example.org
           DJANGO_CORS_ALLOWED_ORIGINS: https://ci.example.org
-        run: docker compose -f docker-compose.prod.yml config -q
+        run: |
+          trap 'rm -f .env' EXIT
+          cp .env.example .env
+          docker compose -f docker-compose.prod.yml config -q
 
       - name: Verify shell scripts syntax
         run: |

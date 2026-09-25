@@ -187,8 +187,8 @@ class PreflightScriptConsistencyTest(SimpleTestCase):
             self.env_file,
         ]
         env = os.environ.copy()
-        if not shutil.which("docker"):
-            env["SKIP_DOCKER_CHECK"] = "1"
+        env["PREFLIGHT_CONFIG_ONLY"] = "1"
+        env["SKIP_DOCKER_CHECK"] = "1"
         return subprocess.run(cmd, capture_output=True, text=True, cwd=BACKEND_DIR, env=env)
 
     def test_bootstrap_with_http_conf_passes(self):
