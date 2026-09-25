@@ -79,18 +79,34 @@ fi
 echo "Успешно: ${TARGET} (${SIZE} Б)"
 
 # ------------------------------------------------------------------------------
-# Копирование на внешнее хранилище (ТЗ п.29)
+# Копирование на внешнее хранилище (ТЗ п.8, 29)
 # ------------------------------------------------------------------------------
 if [ -n "${S3_BACKUP_BUCKET}" ]; then
-    echo "Копирование дампа на внешнее хранилище: ${S3_BACKUP_BUCKET}..."
+    echo "==> Копирование дампа на внешнее хранилище: ${S3_BACKUP_BUCKET}..."
+    UPLOAD_OK=false
+
     if command -v aws >/dev/null 2>&1; then
-        aws s3 cp "$TARGET" "${S3_BACKUP_BUCKET}/$(basename "$TARGET")"
-        echo "Дамп успешно скопирован в ${S3_BACKUP_BUCKET}"
+        if aws s3 cp "$TARGET" "${S3_BACKUP_BUCKET}/$(basename "$TARGET")"; then
+            UPLOAD_OK=true
+            echo "    [OK] Дамп успешно выгружен в ${S3_BACKUP_BUCKET}/$(basename "$TARGET")"
+        else
+            echo "ОШИБКА: Команда 'aws s3 cp' завершилась сбоем при выгрузке в ${S3_BACKUP_BUCKET}!" >&2
+        fi
     elif command -v rclone >/dev/null 2>&1; then
-        rclone copy "$TARGET" "${S3_BACKUP_BUCKET}"
-        echo "Дамп успешно скопирован через rclone"
+        if rclone copy "$TARGET" "${S3_BACKUP_BUCKET}"; then
+            UPLOAD_OK=true
+            echo "    [OK] Дамп успешно выгружен через rclone в ${S3_BACKUP_BUCKET}"
+        else
+            echo "ОШИБКА: Команда 'rclone copy' завершилась сбоем при выгрузке в ${S3_BACKUP_BUCKET}!" >&2
+        fi
     else
-        echo "ПРЕДУПРЕЖДЕНИЕ: S3_BACKUP_BUCKET задан, но aws-cli или rclone не установлены." >&2
+        echo "ОШИБКА: S3_BACKUP_BUCKET=${S3_BACKUP_BUCKET} задан, но утилиты aws-cli и rclone отсутствуют на сервере!" >&2
+    fi
+
+    if [ "$UPLOAD_OK" != true ]; then
+        echo "ОШИБКА: Выгрузка резервной копии на внешнее хранилище НЕ удалась. Локальный дамп сохранён: ${TARGET}." >&2
+        echo "Резервная копия НЕ считается выполненной. Завершение с ошибкой." >&2
+        exit 1
     fi
 fi
 

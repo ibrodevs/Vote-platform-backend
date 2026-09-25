@@ -95,6 +95,8 @@ if [ -f "${ENV_FILE}" ]; then
     CELERY_BROKER_VAL="$(get_env CELERY_BROKER_URL)"
     DB_BEHIND_PG_VAL="$(get_env DB_BEHIND_PGBOUNCER)"
     DB_CONN_AGE_VAL="$(get_env DB_CONN_MAX_AGE)"
+    API_DOMAIN_VAL="$(get_env API_DOMAIN)"
+    ADMIN_ALLOWED_IP_VAL="$(get_env ADMIN_ALLOWED_IP)"
 
     # DJANGO_ENV
     if [ "${DJANGO_ENV_VAL}" = "production" ]; then
@@ -170,13 +172,27 @@ if [ -f "${ENV_FILE}" ]; then
         fail "Неверная конфигурация PgBouncer! Требуется DB_BEHIND_PGBOUNCER=True и DB_CONN_MAX_AGE=0"
     fi
 
-    # Deployment stage
+    # Deployment stage & API_DOMAIN (ТЗ п.3, 4)
     if [ "${STAGE_VAL}" = "bootstrap" ]; then
         pass "Режим: DEPLOYMENT_STAGE=bootstrap (проверка по IP over HTTP)"
     elif [ "${STAGE_VAL}" = "production" ]; then
         pass "Режим: DEPLOYMENT_STAGE=production (боевой режим с TLS)"
+        if [ -z "${API_DOMAIN_VAL}" ]; then
+            fail "DEPLOYMENT_STAGE=production требует обязательного указания API_DOMAIN в .env (например: api.example.com)"
+        elif [[ "${API_DOMAIN_VAL}" == http://* ]] || [[ "${API_DOMAIN_VAL}" == https://* ]]; then
+            fail "API_DOMAIN не должен содержать схему 'http://' или 'https://'. Укажите только имя хоста (например: api.example.com)"
+        else
+            pass "API_DOMAIN: ${API_DOMAIN_VAL}"
+        fi
     else
         warn "Нестандартный DEPLOYMENT_STAGE: '${STAGE_VAL}' (рекомендуется 'bootstrap' или 'production')"
+    fi
+
+    # ADMIN_ALLOWED_IP (ТЗ п.10)
+    if [ -n "${ADMIN_ALLOWED_IP_VAL}" ]; then
+        pass "ADMIN_ALLOWED_IP: ${ADMIN_ALLOWED_IP_VAL} (доступ к Django admin ограничен IP allowlist)"
+    else
+        warn "ADMIN_ALLOWED_IP не задан — Django admin доступен без IP allowlist (в production рекомендуется ограничить)"
     fi
 fi
 
@@ -228,23 +244,90 @@ if [ -f /proc/swaps ]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 4. Проверка портов
+# 4. Проверка портов (ТЗ п.6)
 # ------------------------------------------------------------------------------
 info "Проверка сетевых портов..."
 
-check_port_free() {
+get_port_listener() {
     local port=$1
     if command -v ss >/dev/null 2>&1; then
-        if ss -tuln | grep -q ":${port} "; then
-            return 1
-        fi
+        ss -tuln 2>/dev/null | grep -E "[:\.]${port}\b" || true
     elif command -v netstat >/dev/null 2>&1; then
-        if netstat -tuln 2>/dev/null | grep -q ":${port} "; then
-            return 1
-        fi
+        netstat -tuln 2>/dev/null | grep -E "[:\.]${port}\b" || true
+    elif command -v lsof >/dev/null 2>&1; then
+        lsof -iTCP:"${port}" -sTCP:LISTEN -P -n 2>/dev/null || true
     fi
-    return 0
 }
+
+get_port_proc_info() {
+    local port=$1
+    if command -v ss >/dev/null 2>&1; then
+        ss -tulpn 2>/dev/null | grep -E "[:\.]${port}\b" || true
+    elif command -v lsof >/dev/null 2>&1; then
+        lsof -iTCP:"${port}" -sTCP:LISTEN -P -n 2>/dev/null || true
+    elif command -v netstat >/dev/null 2>&1; then
+        netstat -tulpn 2>/dev/null | grep -E "[:\.]${port}\b" || true
+    fi
+}
+
+check_public_port() {
+    local port=$1
+    local listener
+    listener=$(get_port_listener "${port}")
+    if [ -n "${listener}" ]; then
+        local proc_info
+        proc_info=$(get_port_proc_info "${port}" | head -n 1 | xargs || true)
+
+        # Проверка: занят ли порт Docker-контейнером нашего проекта
+        local is_our_container=false
+        local container_name=""
+        if command -v docker >/dev/null 2>&1; then
+            container_name=$(docker ps --filter "publish=${port}" --format '{{.Names}} ({{.Image}})' 2>/dev/null | head -n 1 || true)
+            if [ -n "${container_name}" ]; then
+                local compose_project
+                compose_project=$(basename "${BACKEND_DIR}" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]_-')
+                if [[ "${container_name}" == *"nginx"* ]] || [[ "${container_name}" == *"${compose_project}"* ]] || [[ "${container_name}" == *"vote"* ]]; then
+                    is_our_container=true
+                fi
+            fi
+        fi
+
+        if [ "${is_our_container}" = true ]; then
+            pass "Порт ${port}/tcp занят контейнером текущего проекта: ${container_name} — обновление разрешено"
+        else
+            fail "Порт ${port}/tcp занят сторонним процессом: ${proc_info:-${listener}}! Освободите порт перед деплоем"
+        fi
+    else
+        pass "Порт ${port}/tcp свободен"
+    fi
+}
+
+check_internal_port() {
+    local port=$1
+    local name=$2
+    local listener
+    listener=$(get_port_listener "${port}")
+    if [ -n "${listener}" ]; then
+        # Проверяем, слушает ли порт на 0.0.0.0, ::: или * (все интерфейсы)
+        if echo "${listener}" | grep -E "(0\.0\.0\.0|:::|\*)[:\.]${port}\b" >/dev/null 2>&1; then
+            local proc_info
+            proc_info=$(get_port_proc_info "${port}" | head -n 1 | xargs || true)
+            fail "Внутренний порт ${port}/tcp (${name}) открыт наружу (0.0.0.0/*): ${proc_info:-${listener}}! Сервис должен быть изолирован в Docker-сети"
+        else
+            pass "Порт ${port}/tcp (${name}) привязан только к локальному интерфейсу (127.0.0.1)"
+        fi
+    else
+        pass "Порт ${port}/tcp (${name}) не экспонирован наружу на хосте"
+    fi
+}
+
+check_public_port 80
+check_public_port 443
+
+check_internal_port 5432 "PostgreSQL"
+check_internal_port 6379 "Redis"
+check_internal_port 6432 "PgBouncer"
+check_internal_port 8000 "Gunicorn / App"
 
 # ------------------------------------------------------------------------------
 # 5. Проверка синтаксиса Docker Compose

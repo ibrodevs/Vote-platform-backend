@@ -349,13 +349,27 @@ docker compose -f docker-compose.prod.yml ps
 ```
 Все контейнеры (`postgres`, `pgbouncer`, `redis`, `app`, `celery-default`, `celery-heavy`, `nginx`) должны находиться в состоянии `Up (healthy)`.
 
-### 10.2. Проверка эндпоинтов здоровья
+### 10.2. Архитектура и проверка health-эндпоинтов
+
+В системе реализовано 3 независимых уровня проверок:
+
+| Эндпоинт | Назначение | Кто проверяет | Поведение |
+|---|---|---|---|
+| `/nginx-health` | Здоровье Nginx контейнера | Docker Compose healthcheck | Возвращает `200 "ok\n"` напрямую из Nginx. Не проксируется в Django, **не редиректится на HTTPS** в https-режиме |
+| `/health/live` | Liveness Django / Gunicorn | Nginx / оркестраторы | Проверяет, что Python-процесс жив и обрабатывает HTTP-запросы |
+| `/health/ready` | Readiness всей системы | CI / deploy.sh / мониторинг | Проверяет подключение к PostgreSQL, статус Redis и валидность production-настроек |
+
+Команды для ручной проверки:
 ```bash
-# Liveness (процесс жив)
+# 1. Внутренний healthcheck Nginx
+curl -i http://127.0.0.1/nginx-health
+# Ожидаемый ответ: 200 OK (ok)
+
+# 2. Liveness приложения (процесс Django/Gunicorn жив)
 curl -i http://<SERVER_IP>/health/live
 # Ожидаемый ответ: 200 OK {"status": "alive"}
 
-# Readiness (БД и кэш доступны, production проверки пройдены)
+# 3. Readiness (БД и кэш доступны, production проверки пройдены)
 curl -i http://<SERVER_IP>/health/ready
 # Ожидаемый ответ: 200 OK {"status": "ready", "checks": {"database": "ok", "cache": "ok", "config": "ok"}}
 ```
@@ -449,13 +463,44 @@ docker compose -f docker-compose.prod.yml run --rm app python manage.py audit_db
 0 3 * * * /home/deployer/projects/Vote-platform-backend/scripts/backup.sh >> /var/log/vote_backup.log 2>&1
 ```
 
-### 12.4. Внешнее хранилище бэкапов
-Хранение бэкапов на том же диске, где работает PostgreSQL, несёт критический риск потери данных при аварии сервера. Настройте Hetzner Storage Box или S3-совместимое хранилище:
+### 12.4. Внешнее хранилище бэкапов (Off-Site Backups)
+Хранение бэкапов исключительно на том же диске, где работает PostgreSQL, несёт критический риск потери данных при отказе сервера или гипервизора. Настройте Hetzner Storage Box или S3-совместимое хранилище (AWS S3, MinIO):
+
 ```bash
-# Экспорт переменной перед вызовом backup.sh
+# Задайте переменную в .env или в окружении:
 export S3_BACKUP_BUCKET=s3://my-hetzner-backup-bucket
 ./scripts/backup.sh
 ```
+
+> [!IMPORTANT]
+> **Семантика сбоя внешнего хранилища (ТЗ п.8):**
+> Если переменная `S3_BACKUP_BUCKET` задана, но утилиты `aws` / `rclone` отсутствуют, credentials невалидны или удалённый сервер недоступен — `backup.sh` **завершается с ошибкой (`exit != 0`)**. Локальный дамп при этом сохраняется на диске, однако cron-задача или CI пайплайн получают аварийный статус, сигнализируя администратору о сбое off-site резервирования.
+
+### 12.5. Восстановление базы данных (Restore Drill & Disaster Recovery)
+
+Восстановление базы данных выполняется скриптом `scripts/restore.sh`:
+```bash
+# Интерактивный режим с подтверждением имени БД:
+./scripts/restore.sh backups/vote_db-20260925-030000.dump
+
+# Неинтерактивный режим для автоматизации:
+CONFIRM=yes ./scripts/restore.sh backups/vote_db-20260925-030000.dump
+```
+
+Скрипт строго следует безопасному 13-шаговому алгоритму (ТЗ п.1):
+1. **Валидация входного дампа**: запуск `pg_restore --list <dump>`, проверка структуры заголовков до выполнения каких-либо действий.
+2. **Подтверждение пользователя**: интерактивный запрос точного имени базы данных (пропускается при `CONFIRM=yes`).
+3. **Остановка пишущих сервисов**: `docker compose stop app celery-default celery-heavy` — предотвращает поступление новых транзакций и гонки при восстановлении.
+4. **Создание обязательной страховочной копии**: `pg_dump` текущей базы в `/tmp/pre-restore-...dump`.
+5. **Валидация страховочной копии**: `pg_restore --list` страховочного дампа. **Если создание или валидация страховочной копии завершились ошибкой, восстановление немедленно прерывается (`exit 1`)**, не затрагивая текущую БД.
+6. **Принудительное завершение соединений**: `pg_terminate_backend` для всех оставшихся клиентов.
+7. **Удаление старой БД (DROP DATABASE)**: выполняется отдельным вызовом `psql` (раздельно от CREATE DATABASE).
+8. **Создание чистой БД (CREATE DATABASE)**: выполняется отдельным вызовом `psql`.
+9. **Восстановление целевого дампа**: `pg_restore --no-owner --no-privileges`.
+10. **Проверка схемы миграций**: `python manage.py migrate --check`.
+11. **Проверка целостности данных**: запуск `python manage.py audit_db_data` (сверка бюллетеней, голосов и связей).
+12. **Запуск сервисов**: `docker compose start app celery-default celery-heavy`.
+13. **Верификация работоспособности**: проверка `GET /health/ready`.
 
 ---
 
@@ -509,20 +554,49 @@ chmod 600 deploy/certs/privkey.pem
 Отредактируйте `.env`:
 ```env
 DEPLOYMENT_STAGE=production
+API_DOMAIN=api.yourdomain.kg
 DJANGO_ALLOWED_HOSTS=api.yourdomain.kg,<SERVER_IP>
 DJANGO_CORS_ALLOWED_ORIGINS=https://vote.yourdomain.kg
 DJANGO_CSRF_TRUSTED_ORIGINS=https://vote.yourdomain.kg
 DJANGO_SSL_REDIRECT=True
 NGINX_CONF_FILE=https.conf
+
+# Ограничение доступа к Django Admin по IP/VPN (ТЗ п.10)
+ADMIN_ALLOWED_IP=198.51.100.25
+
+# HSTS на первом этапе ВЫКЛЮЧЕН (ТЗ п.5)
+DJANGO_HSTS_SECONDS=0
+DJANGO_HSTS_SUBDOMAINS=False
+DJANGO_HSTS_PRELOAD=False
 ```
 
-### 14.3. Применение конфигурации
+### 14.3. Применение конфигурации через deploy.sh
+Запустите скрипт деплоя:
 ```bash
-docker compose -f docker-compose.prod.yml up -d app celery-default celery-heavy nginx
+./scripts/deploy.sh
 ```
 
-Проверьте доступность по HTTPS:
-```bash
-curl -i https://api.yourdomain.kg/health/ready
-```
-Backend переведён в полноценный боевой режим с TLS, HSTS и защищёнными cookie.
+Скрипт автоматически:
+1. Выполнит preflight-проверку (валидация `API_DOMAIN` и сетевых портов).
+2. Сгенерирует `deploy/nginx/conf.d/https.conf` из шаблона `deploy/nginx/templates/https.conf.template` с подстановкой `${API_DOMAIN}`.
+3. Сгенерирует `deploy/nginx/admin_ips.conf` с правилами ограничения доступа к `/admin-django/` и `/admin/` по IP.
+4. Проверит миграции, статику и выполнит строгую верификацию HTTPS:
+   ```bash
+   curl -fsS https://api.yourdomain.kg/health/live
+   curl -fsS https://api.yourdomain.kg/health/ready
+   ```
+   (Проверка выполняется **без флага `-k`**, с обязательной валидацией цепочки доверия TLS-сертификата).
+
+### 14.4. Политика включения HSTS (Strict-Transport-Security)
+
+> [!CAUTION]
+> **HSTS не включается автоматически!**
+> Если включить HSTS с длительным сроком действия (`max-age=31536000`) и параметром `includeSubDomains` до проверки стабильности DNS и автообновления Let's Encrypt сертификатов, любая ошибка конфигурации TLS заблокирует доступ ко всем сервисам на данном домене в браузерах пользователей на целый год без возможности отката со стороны сервера.
+>
+> **Правильная последовательность перехода:**
+> 1. Запуск в `DEPLOYMENT_STAGE=bootstrap` (HTTP over IP).
+> 2. Подключение домена, выпуск сертификатов, перевод в `DEPLOYMENT_STAGE=production` (HTTPS) с `DJANGO_HSTS_SECONDS=0`.
+> 3. Проверка работы certbot renew и стабильности API в течение 7–14 дней.
+> 4. Осознанное включение HSTS с коротким TTL для теста: `DJANGO_HSTS_SECONDS=300`.
+> 5. Перевод в боевой HSTS: `DJANGO_HSTS_SECONDS=31536000` (без `includeSubDomains` и `preload`, если поддомены не подготовлены).
+

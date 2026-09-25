@@ -157,6 +157,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      pgbouncer:
+        condition: service_healthy
       redis:
         condition: service_healthy
     deploy:
@@ -188,6 +190,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      pgbouncer:
+        condition: service_healthy
       redis:
         condition: service_healthy
     deploy:
@@ -204,6 +208,7 @@ services:
       # Подключение конфигурации: Mode A (http.conf) или Mode B (https.conf) (ТЗ п.14)
       - ./deploy/nginx/conf.d/${NGINX_CONF_FILE:-http.conf}:/etc/nginx/conf.d/default.conf:ro
       - ./deploy/nginx/vote_proxy_params.conf:/etc/nginx/vote_proxy_params.conf:ro
+      - ./deploy/nginx/admin_ips.conf:/etc/nginx/admin_ips.conf:ro
       - static:/srv/static:ro
       - media:/srv/media:ro
       - ./deploy/certs:/etc/nginx/certs:ro
@@ -215,11 +220,11 @@ services:
       app:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/health/live || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/nginx-health | grep -q ok || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 5
-      start_period: 10s
+      start_period: 5s
     deploy:
       resources:
         limits:
