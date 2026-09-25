@@ -24,18 +24,17 @@ load_backup_env() {
         get_val() {
             grep -E "^${1}=" "$env_file" 2>/dev/null | cut -d '=' -f2- | tr -d '"' | tr -d "'" | tr -d '\r' | xargs || true
         }
-        DB_NAME="${DB_NAME:-$(get_val DB_NAME)}"
-        DB_USER="${DB_USER:-$(get_val DB_USER)}"
-        DB_PASSWORD="${DB_PASSWORD:-$(get_val DB_PASSWORD)}"
-        DB_HOST="${DB_HOST:-$(get_val DB_HOST)}"
-        DB_PORT="${DB_PORT:-$(get_val DB_PORT)}"
-        BACKUP_DIR="${BACKUP_DIR:-$(get_val BACKUP_DIR)}"
-        S3_BACKUP_BUCKET="${S3_BACKUP_BUCKET:-$(get_val S3_BACKUP_BUCKET)}"
-        # Унифицированное имя: RETENTION_DAYS (с fallback на BACKUP_RETENTION_DAYS)
-        RETENTION_DAYS="${RETENTION_DAYS:-$(get_val RETENTION_DAYS)}"
-        if [ -z "${RETENTION_DAYS}" ]; then
-            RETENTION_DAYS="$(get_val BACKUP_RETENTION_DAYS)"
-        fi
+        local val
+        val="$(get_val DB_NAME)"; if [ -n "$val" ]; then DB_NAME="$val"; fi
+        val="$(get_val DB_USER)"; if [ -n "$val" ]; then DB_USER="$val"; fi
+        val="$(get_val DB_PASSWORD)"; if [ -n "$val" ]; then DB_PASSWORD="$val"; fi
+        val="$(get_val DB_HOST)"; if [ -n "$val" ]; then DB_HOST="$val"; fi
+        val="$(get_val DB_PORT)"; if [ -n "$val" ]; then DB_PORT="$val"; fi
+        val="$(get_val BACKUP_DIR)"; if [ -n "$val" ]; then BACKUP_DIR="$val"; fi
+        val="$(get_val S3_BACKUP_BUCKET)"; if [ -n "$val" ]; then S3_BACKUP_BUCKET="$val"; fi
+        val="$(get_val RETENTION_DAYS)"
+        if [ -z "$val" ]; then val="$(get_val BACKUP_RETENTION_DAYS)"; fi
+        if [ -n "$val" ]; then RETENTION_DAYS="$val"; fi
     fi
 }
 

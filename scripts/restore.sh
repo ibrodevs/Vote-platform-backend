@@ -36,13 +36,14 @@ load_restore_env() {
         get_val() {
             grep -E "^${1}=" "$env_file" 2>/dev/null | cut -d '=' -f2- | tr -d '"' | tr -d "'" | tr -d '\r' | xargs || true
         }
-        DB_NAME="${DB_NAME:-$(get_val DB_NAME)}"
-        DB_USER="${DB_USER:-$(get_val DB_USER)}"
-        DB_PASSWORD="${DB_PASSWORD:-$(get_val DB_PASSWORD)}"
-        DB_HOST="${DB_HOST:-$(get_val DB_HOST)}"
-        DB_PORT="${DB_PORT:-$(get_val DB_PORT)}"
-        DEPLOYMENT_STAGE="${DEPLOYMENT_STAGE:-$(get_val DEPLOYMENT_STAGE)}"
-        API_DOMAIN="${API_DOMAIN:-$(get_val API_DOMAIN)}"
+        local val
+        val="$(get_val DB_NAME)"; if [ -n "$val" ]; then DB_NAME="$val"; fi
+        val="$(get_val DB_USER)"; if [ -n "$val" ]; then DB_USER="$val"; fi
+        val="$(get_val DB_PASSWORD)"; if [ -n "$val" ]; then DB_PASSWORD="$val"; fi
+        val="$(get_val DB_HOST)"; if [ -n "$val" ]; then DB_HOST="$val"; fi
+        val="$(get_val DB_PORT)"; if [ -n "$val" ]; then DB_PORT="$val"; fi
+        val="$(get_val DEPLOYMENT_STAGE)"; if [ -n "$val" ]; then DEPLOYMENT_STAGE="$val"; fi
+        val="$(get_val API_DOMAIN)"; if [ -n "$val" ]; then API_DOMAIN="$val"; fi
     fi
 }
 
@@ -52,7 +53,7 @@ get_ready_url() {
     if [ "$stage" = "production" ]; then
         if [ -z "$domain" ]; then
             echo ""
-            return 1
+            return 0
         fi
         echo "https://${domain}/health/ready"
     else
