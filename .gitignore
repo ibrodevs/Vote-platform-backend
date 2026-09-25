@@ -26,3 +26,11 @@ db.sqlite3-journal
 # Нагрузочные тесты: файл содержит действующие JWT
 /loadtests/fixtures/
 /loadtests/results/
+
+# Сертификаты и резервные копии
+deploy/certs/*.pem
+deploy/certs/*.key
+deploy/certs/*.crt
+backups/
+*.dump
+

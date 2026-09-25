@@ -127,15 +127,27 @@ def check_clickjacking():
 
 
 def check_ssl_settings():
+    stage = getattr(settings, 'DEPLOYMENT_STAGE', 'production')
+    is_bootstrap = getattr(settings, 'IS_BOOTSTRAP', False) or stage == 'bootstrap'
+    if is_bootstrap:
+        return _pass(
+            'secure_cookies_bootstrap',
+            'Bootstrap-режим (HTTP over IP): проверка Secure-кук и SSL-редиректа временно пропущена до подключения TLS'
+        )
     problems = []
     if not getattr(settings, 'SESSION_COOKIE_SECURE', False):
         problems.append('SESSION_COOKIE_SECURE')
     if not getattr(settings, 'CSRF_COOKIE_SECURE', False):
         problems.append('CSRF_COOKIE_SECURE')
+    if not getattr(settings, 'SECURE_SSL_REDIRECT', False):
+        problems.append('SECURE_SSL_REDIRECT')
     if problems:
-        return _fail('insecure_cookies', f'Небезопасные cookies: {", ".join(problems)}',
-                     'Куки уйдут по HTTP и будут перехвачены.')
-    return _pass('secure_cookies', 'Куки помечены Secure')
+        return _fail(
+            'insecure_cookies',
+            f'Небезопасная конфигурация SSL/кук: {", ".join(problems)}',
+            'В production режиме куки должны быть Secure и включён SSL-редирект (SECURE_SSL_REDIRECT=True).'
+        )
+    return _pass('secure_cookies', 'Куки помечены Secure, SSL-редирект включён')
 
 
 def check_migrations():

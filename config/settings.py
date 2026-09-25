@@ -15,6 +15,12 @@ load_dotenv(BASE_DIR / '.env')
 DJANGO_ENV = os.getenv('DJANGO_ENV', 'development').strip().lower()
 IS_PRODUCTION = DJANGO_ENV == 'production'
 
+# Режим развёртывания (ТЗ п.32, 33):
+#   'production' — штатный боевой режим с доменом и TLS (по умолчанию при DJANGO_ENV=production)
+#   'bootstrap'  — первичный запуск по IP сервера до подключения домена и выпуска TLS-сертификатов
+DEPLOYMENT_STAGE = os.getenv('DEPLOYMENT_STAGE', 'production' if IS_PRODUCTION else 'development').strip().lower()
+IS_BOOTSTRAP = IS_PRODUCTION and DEPLOYMENT_STAGE == 'bootstrap'
+
 # Ключ из репозитория оставлен как fallback ТОЛЬКО для разработки.
 # В production его отсутствие валит старт: этим ключом подписываются
 # студенческие JWT, и знание ключа позволяет выпустить токен любого
@@ -445,15 +451,21 @@ X_FRAME_OPTIONS = 'DENY' if IS_PRODUCTION else 'SAMEORIGIN'
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
 
-SESSION_COOKIE_SECURE = IS_PRODUCTION
-CSRF_COOKIE_SECURE = IS_PRODUCTION
+# Secure-флаг для cookies (ТЗ п.32, 33):
+# В обычном production куки всегда Secure.
+# В режиме bootstrap (первичный запуск по HTTP over IP) флаг Secure временно опускается,
+# чтобы браузер не блокировал куки сессии до выпуска сертификатов.
+_default_cookie_secure = 'False' if IS_BOOTSTRAP else ('True' if IS_PRODUCTION else 'False')
+SESSION_COOKIE_SECURE = os.getenv('DJANGO_SESSION_COOKIE_SECURE', _default_cookie_secure).strip().lower() == 'true'
+CSRF_COOKIE_SECURE = os.getenv('DJANGO_CSRF_COOKIE_SECURE', _default_cookie_secure).strip().lower() == 'true'
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = 'Lax'
 CSRF_COOKIE_SAMESITE = 'Lax'
 
-# HSTS включается отдельной переменной: выставить его случайно на домене
-# без валидного TLS — значит сделать сайт недоступным на месяцы.
-SECURE_SSL_REDIRECT = IS_PRODUCTION and os.getenv('DJANGO_SSL_REDIRECT', 'True').lower() == 'true'
+# HSTS и SSL-редирект: в bootstrap-режиме (HTTP over IP) редирект на HTTPS выключен,
+# иначе сервер перенаправлял бы запросы на несуществующий TLS.
+_default_ssl_redirect = 'False' if IS_BOOTSTRAP else 'True'
+SECURE_SSL_REDIRECT = IS_PRODUCTION and os.getenv('DJANGO_SSL_REDIRECT', _default_ssl_redirect).strip().lower() == 'true'
 SECURE_HSTS_SECONDS = int(os.getenv('DJANGO_HSTS_SECONDS', '0'))
 SECURE_HSTS_INCLUDE_SUBDOMAINS = os.getenv('DJANGO_HSTS_SUBDOMAINS', 'False').lower() == 'true'
 SECURE_HSTS_PRELOAD = os.getenv('DJANGO_HSTS_PRELOAD', 'False').lower() == 'true'
