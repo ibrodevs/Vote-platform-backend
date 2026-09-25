@@ -49,21 +49,25 @@ echo "=================================================================="
 # ------------------------------------------------------------------------------
 info "Проверка Docker окружения..."
 
-if command -v docker >/dev/null 2>&1; then
-    pass "Docker CLI установлен: $(docker --version)"
-    if docker info >/dev/null 2>&1; then
-        pass "Docker daemon доступен и отвечает"
+if [ "${SKIP_DOCKER_CHECK:-0}" = "1" ]; then
+    warn "Проверка Docker окружения пропущена (SKIP_DOCKER_CHECK=1)"
+else
+    if command -v docker >/dev/null 2>&1; then
+        pass "Docker CLI установлен: $(docker --version)"
+        if docker info >/dev/null 2>&1; then
+            pass "Docker daemon доступен и отвечает"
+        else
+            fail "Docker daemon не запущен или текущий пользователь не входит в группу docker"
+        fi
     else
-        fail "Docker daemon не запущен или текущий пользователь не входит в группу docker"
+        fail "Docker не установлен. Установите Docker: https://docs.docker.com/engine/install/ubuntu/"
     fi
-else
-    fail "Docker не установлен. Установите Docker: https://docs.docker.com/engine/install/ubuntu/"
-fi
 
-if docker compose version >/dev/null 2>&1; then
-    pass "Docker Compose v2 доступен: $(docker compose version)"
-else
-    fail "Docker Compose v2 не найден (требуется docker compose v2.x)"
+    if docker compose version >/dev/null 2>&1; then
+        pass "Docker Compose v2 доступен: $(docker compose version)"
+    else
+        fail "Docker Compose v2 не найден (требуется docker compose v2.x)"
+    fi
 fi
 
 # ------------------------------------------------------------------------------
@@ -71,12 +75,41 @@ fi
 # ------------------------------------------------------------------------------
 info "Проверка файла конфигурации (.env)..."
 
-ENV_FILE="${BACKEND_DIR}/.env"
+ENV_FILE="${1:-${BACKEND_DIR}/.env}"
 if [ -f "${ENV_FILE}" ]; then
-    pass "Файл .env найден"
+    pass "Файл конфигурации найден: ${ENV_FILE}"
 else
-    fail "Файл .env отсутствует! Скопируйте шаблон: cp .env.example .env и задайте секреты"
+    fail "Файл конфигурации отсутствует (${ENV_FILE})! Скопируйте шаблон: cp .env.example .env и задайте секреты"
 fi
+
+validate_domain() {
+    local domain="$1"
+    if [[ ! "${domain}" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ ]] || [[ "${domain}" =~ [\/:\;[:space:]\$\`\\] ]] || [[ "${domain}" == *".."* ]]; then
+        return 1
+    fi
+    return 0
+}
+
+validate_ip_or_cidr() {
+    local ip="$1"
+    if [[ "${ip}" =~ [^a-fA-F0-9.:/] ]] || [ -z "${ip}" ]; then
+        return 1
+    fi
+    local ipv4_cidr_regex="^([0-9]{1,3}\.){3}[0-9]{1,3}(/([0-9]|[1-2][0-9]|3[0-2]))?$"
+    local ipv6_cidr_regex="^([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}(/([0-9]|[1-9][0-9]|1[0-1][0-9]|12[0-8]))?$"
+
+    if [[ "${ip}" =~ $ipv4_cidr_regex ]]; then
+        local base_ip="${ip%%/*}"
+        IFS='.' read -r o1 o2 o3 o4 <<< "$base_ip"
+        if [ "$o1" -le 255 ] && [ "$o2" -le 255 ] && [ "$o3" -le 255 ] && [ "$o4" -le 255 ]; then
+            return 0
+        fi
+        return 1
+    elif [[ "${ip}" =~ $ipv6_cidr_regex ]] && [[ "${ip}" == *":"* ]]; then
+        return 0
+    fi
+    return 1
+}
 
 # Загружаем переменные из .env безопасно для проверок
 if [ -f "${ENV_FILE}" ]; then
@@ -86,6 +119,7 @@ if [ -f "${ENV_FILE}" ]; then
 
     DJANGO_ENV_VAL="$(get_env DJANGO_ENV)"
     STAGE_VAL="$(get_env DEPLOYMENT_STAGE)"
+    STAGE_VAL="${STAGE_VAL:-bootstrap}"
     SECRET_KEY_VAL="$(get_env DJANGO_SECRET_KEY)"
     ALLOWED_HOSTS_VAL="$(get_env DJANGO_ALLOWED_HOSTS)"
     CORS_VAL="$(get_env DJANGO_CORS_ALLOWED_ORIGINS)"
@@ -97,6 +131,8 @@ if [ -f "${ENV_FILE}" ]; then
     DB_CONN_AGE_VAL="$(get_env DB_CONN_MAX_AGE)"
     API_DOMAIN_VAL="$(get_env API_DOMAIN)"
     ADMIN_ALLOWED_IP_VAL="$(get_env ADMIN_ALLOWED_IP)"
+    NGINX_CONF_VAL="$(get_env NGINX_CONF_FILE)"
+    NGINX_CONF_VAL="${NGINX_CONF_VAL:-http.conf}"
 
     # DJANGO_ENV
     if [ "${DJANGO_ENV_VAL}" = "production" ]; then
@@ -172,27 +208,85 @@ if [ -f "${ENV_FILE}" ]; then
         fail "Неверная конфигурация PgBouncer! Требуется DB_BEHIND_PGBOUNCER=True и DB_CONN_MAX_AGE=0"
     fi
 
-    # Deployment stage & API_DOMAIN (ТЗ п.3, 4)
+    # Согласованность stage <-> NGINX_CONF_FILE (ТЗ п.7)
     if [ "${STAGE_VAL}" = "bootstrap" ]; then
-        pass "Режим: DEPLOYMENT_STAGE=bootstrap (проверка по IP over HTTP)"
-    elif [ "${STAGE_VAL}" = "production" ]; then
-        pass "Режим: DEPLOYMENT_STAGE=production (боевой режим с TLS)"
-        if [ -z "${API_DOMAIN_VAL}" ]; then
-            fail "DEPLOYMENT_STAGE=production требует обязательного указания API_DOMAIN в .env (например: api.example.com)"
-        elif [[ "${API_DOMAIN_VAL}" == http://* ]] || [[ "${API_DOMAIN_VAL}" == https://* ]]; then
-            fail "API_DOMAIN не должен содержать схему 'http://' или 'https://'. Укажите только имя хоста (например: api.example.com)"
+        if [ "${NGINX_CONF_VAL}" = "http.conf" ]; then
+            pass "Согласованность stage/config: DEPLOYMENT_STAGE=bootstrap и NGINX_CONF_FILE=http.conf"
         else
-            pass "API_DOMAIN: ${API_DOMAIN_VAL}"
+            fail "Несогласованная конфигурация: DEPLOYMENT_STAGE=bootstrap требует NGINX_CONF_FILE=http.conf (получено: '${NGINX_CONF_VAL}')"
+        fi
+    elif [ "${STAGE_VAL}" = "production" ]; then
+        if [ "${NGINX_CONF_VAL}" = "https.conf" ]; then
+            pass "Согласованность stage/config: DEPLOYMENT_STAGE=production и NGINX_CONF_FILE=https.conf"
+        else
+            fail "Несогласованная конфигурация: DEPLOYMENT_STAGE=production требует NGINX_CONF_FILE=https.conf (получено: '${NGINX_CONF_VAL}')"
         fi
     else
         warn "Нестандартный DEPLOYMENT_STAGE: '${STAGE_VAL}' (рекомендуется 'bootstrap' или 'production')"
     fi
 
-    # ADMIN_ALLOWED_IP (ТЗ п.10)
-    if [ -n "${ADMIN_ALLOWED_IP_VAL}" ]; then
-        pass "ADMIN_ALLOWED_IP: ${ADMIN_ALLOWED_IP_VAL} (доступ к Django admin ограничен IP allowlist)"
+    # Валидация API_DOMAIN (ТЗ п.10)
+    if [ "${STAGE_VAL}" = "production" ]; then
+        if [ -z "${API_DOMAIN_VAL}" ]; then
+            fail "DEPLOYMENT_STAGE=production требует обязательного указания API_DOMAIN в .env (например: api.example.com)"
+        elif ! validate_domain "${API_DOMAIN_VAL}"; then
+            fail "API_DOMAIN содержит недопустимые символы: '${API_DOMAIN_VAL}' (разрешены только буквы, цифры, дефис и точка)"
+        else
+            pass "API_DOMAIN валиден: ${API_DOMAIN_VAL}"
+        fi
+    elif [ -n "${API_DOMAIN_VAL}" ]; then
+        if ! validate_domain "${API_DOMAIN_VAL}"; then
+            fail "API_DOMAIN содержит недопустимые символы: '${API_DOMAIN_VAL}'"
+        else
+            pass "API_DOMAIN валиден: ${API_DOMAIN_VAL}"
+        fi
+    fi
+
+    # Валидация ADMIN_ALLOWED_IP (ТЗ п.11, 12)
+    if [ "${STAGE_VAL}" = "production" ]; then
+        if [ -z "${ADMIN_ALLOWED_IP_VAL}" ]; then
+            fail "В режиме DEPLOYMENT_STAGE=production переменная ADMIN_ALLOWED_IP обязательна для ограничения доступа к панели управления Django (ТЗ п.12)"
+        elif ! validate_ip_or_cidr "${ADMIN_ALLOWED_IP_VAL}"; then
+            fail "ADMIN_ALLOWED_IP содержит некорректный IP/CIDR адрес: '${ADMIN_ALLOWED_IP_VAL}' (ожидается IPv4, IPv6 или CIDR)"
+        else
+            pass "ADMIN_ALLOWED_IP валиден: ${ADMIN_ALLOWED_IP_VAL} (доступ к Django admin ограничен)"
+        fi
     else
-        warn "ADMIN_ALLOWED_IP не задан — Django admin доступен без IP allowlist (в production рекомендуется ограничить)"
+        if [ -z "${ADMIN_ALLOWED_IP_VAL}" ]; then
+            warn "ADMIN_ALLOWED_IP не задан — в bootstrap-режиме Django admin открыт без ограничения по IP"
+        elif ! validate_ip_or_cidr "${ADMIN_ALLOWED_IP_VAL}"; then
+            fail "ADMIN_ALLOWED_IP содержит некорректный IP/CIDR адрес: '${ADMIN_ALLOWED_IP_VAL}'"
+        else
+            pass "ADMIN_ALLOWED_IP валиден: ${ADMIN_ALLOWED_IP_VAL}"
+        fi
+    fi
+
+    # Проверка TLS-сертификатов для production (ТЗ п.8, 9)
+    if [ "${STAGE_VAL}" = "production" ]; then
+        CERT_DIR="${BACKEND_DIR}/deploy/certs"
+        FULLCHAIN="${CERT_DIR}/fullchain.pem"
+        PRIVKEY="${CERT_DIR}/privkey.pem"
+
+        if [ ! -f "${FULLCHAIN}" ] || [ ! -s "${FULLCHAIN}" ]; then
+            fail "Отсутствует или пуст TLS сертификат: deploy/certs/fullchain.pem (обязателен в production)"
+        elif [ ! -f "${PRIVKEY}" ] || [ ! -s "${PRIVKEY}" ]; then
+            fail "Отсутствует или пуст приватный ключ TLS: deploy/certs/privkey.pem (обязателен в production)"
+        else
+            pass "Файлы deploy/certs/fullchain.pem и privkey.pem присутствуют"
+            if command -v openssl >/dev/null 2>&1; then
+                if openssl x509 -in "${FULLCHAIN}" -noout >/dev/null 2>&1; then
+                    pass "Синтаксис сертификата deploy/certs/fullchain.pem валиден"
+                else
+                    fail "Файл deploy/certs/fullchain.pem не является валидным X.509 сертификатом!"
+                fi
+
+                if openssl pkey -in "${PRIVKEY}" -check -noout >/dev/null 2>&1; then
+                    pass "Синтаксис приватного ключа deploy/certs/privkey.pem валиден"
+                else
+                    fail "Файл deploy/certs/privkey.pem повреждён или не является валидным закрытым ключом!"
+                fi
+            fi
+        fi
     fi
 fi
 

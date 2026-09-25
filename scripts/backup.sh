@@ -18,10 +18,41 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${BACKEND_DIR}"
 
-# Загрузка .env если есть
-if [ -f .env ]; then
-    export $(grep -E '^(DB_NAME|DB_USER|DB_PASSWORD)=' .env | xargs -d '\n' 2>/dev/null || grep -E '^(DB_NAME|DB_USER|DB_PASSWORD)=' .env || true)
+load_backup_env() {
+    local env_file="${1:-${BACKEND_DIR}/.env}"
+    if [ -f "$env_file" ]; then
+        get_val() {
+            grep -E "^${1}=" "$env_file" 2>/dev/null | cut -d '=' -f2- | tr -d '"' | tr -d "'" | tr -d '\r' | xargs || true
+        }
+        DB_NAME="${DB_NAME:-$(get_val DB_NAME)}"
+        DB_USER="${DB_USER:-$(get_val DB_USER)}"
+        DB_PASSWORD="${DB_PASSWORD:-$(get_val DB_PASSWORD)}"
+        DB_HOST="${DB_HOST:-$(get_val DB_HOST)}"
+        DB_PORT="${DB_PORT:-$(get_val DB_PORT)}"
+        BACKUP_DIR="${BACKUP_DIR:-$(get_val BACKUP_DIR)}"
+        S3_BACKUP_BUCKET="${S3_BACKUP_BUCKET:-$(get_val S3_BACKUP_BUCKET)}"
+        # Унифицированное имя: RETENTION_DAYS (с fallback на BACKUP_RETENTION_DAYS)
+        RETENTION_DAYS="${RETENTION_DAYS:-$(get_val RETENTION_DAYS)}"
+        if [ -z "${RETENTION_DAYS}" ]; then
+            RETENTION_DAYS="$(get_val BACKUP_RETENTION_DAYS)"
+        fi
+    fi
+}
+
+# Режим тестирования парсинга конфигурации
+if [ "${1:-}" = "--print-config" ]; then
+    load_backup_env "${2:-${BACKEND_DIR}/.env}"
+    echo "DB_NAME=${DB_NAME:-vote_db}"
+    echo "DB_USER=${DB_USER:-vote_user}"
+    echo "DB_HOST=${DB_HOST:-127.0.0.1}"
+    echo "DB_PORT=${DB_PORT:-5432}"
+    echo "BACKUP_DIR=${BACKUP_DIR:-./backups}"
+    echo "S3_BACKUP_BUCKET=${S3_BACKUP_BUCKET:-}"
+    echo "RETENTION_DAYS=${RETENTION_DAYS:-14}"
+    exit 0
 fi
+
+load_backup_env "${BACKEND_DIR}/.env"
 
 DB_NAME="${DB_NAME:-vote_db}"
 DB_USER="${DB_USER:-vote_user}"

@@ -464,12 +464,16 @@ docker compose -f docker-compose.prod.yml run --rm app python manage.py audit_db
 ```
 
 ### 12.4. Внешнее хранилище бэкапов (Off-Site Backups)
-Хранение бэкапов исключительно на том же диске, где работает PostgreSQL, несёт критический риск потери данных при отказе сервера или гипервизора. Настройте Hetzner Storage Box или S3-совместимое хранилище (AWS S3, MinIO):
+Хранение бэкапов исключительно на том же диске, где работает PostgreSQL, несёт критический риск потери данных при отказе сервера или гипервизора. Настройте Hetzner Storage Box или S3-совместимое хранилище (AWS S3, MinIO).
 
-```bash
-# Задайте переменную в .env или в окружении:
-export S3_BACKUP_BUCKET=s3://my-hetzner-backup-bucket
-./scripts/backup.sh
+Скрипт `scripts/backup.sh` автоматически считывает все параметры из файла `.env`:
+* `S3_BACKUP_BUCKET` — S3-бакет для выгрузки (например, `s3://vote-platform-backups`);
+* `RETENTION_DAYS` — срок хранения локальных дампов на сервере (в днях, по умолчанию 14).
+
+```env
+# Настройки в .env:
+S3_BACKUP_BUCKET=s3://my-hetzner-backup-bucket
+RETENTION_DAYS=14
 ```
 
 > [!IMPORTANT]
@@ -550,8 +554,19 @@ cp /etc/letsencrypt/live/api.yourdomain.kg/privkey.pem deploy/certs/
 chmod 600 deploy/certs/privkey.pem
 ```
 
-### 14.2. Переключение `.env` в Production Mode
-Отредактируйте `.env`:
+### 14.2. Переключение `.env` в Production Mode и обязательные условия (Prerequisites)
+
+Для перевода сервера в `DEPLOYMENT_STAGE=production` скрипты `preflight.sh` и `deploy.sh` требуют выполнения следующих условий (fail-fast защита):
+1. **`DEPLOYMENT_STAGE=production`** в `.env`;
+2. **`NGINX_CONF_FILE=https.conf`** в `.env` (несогласованность `production` + `http.conf` блокируется preflight);
+3. **`API_DOMAIN=<domain>`** в `.env` (валидный hostname-safe домен, без `http://`, `https://`, портов и спецсимволов);
+4. **`ADMIN_ALLOWED_IP=<ip_or_cidr>`** в `.env` (обязательный allowlist для защиты админки в production, например: `198.51.100.25` или `10.8.0.0/24`);
+5. **Наличие непустых TLS-сертификатов**:
+   - `deploy/certs/fullchain.pem`
+   - `deploy/certs/privkey.pem`
+   (сертификаты валидируются через `openssl` при его наличии).
+
+Пример боевого фрагмента `.env`:
 ```env
 DEPLOYMENT_STAGE=production
 API_DOMAIN=api.yourdomain.kg
@@ -561,7 +576,7 @@ DJANGO_CSRF_TRUSTED_ORIGINS=https://vote.yourdomain.kg
 DJANGO_SSL_REDIRECT=True
 NGINX_CONF_FILE=https.conf
 
-# Ограничение доступа к Django Admin по IP/VPN (ТЗ п.10)
+# Ограничение доступа к Django Admin по IP/VPN (ТЗ п.10, 11, 12, 13)
 ADMIN_ALLOWED_IP=198.51.100.25
 
 # HSTS на первом этапе ВЫКЛЮЧЕН (ТЗ п.5)

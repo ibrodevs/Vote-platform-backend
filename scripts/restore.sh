@@ -30,18 +30,61 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${BACKEND_DIR}"
 
+load_restore_env() {
+    local env_file="${1:-${BACKEND_DIR}/.env}"
+    if [ -f "$env_file" ]; then
+        get_val() {
+            grep -E "^${1}=" "$env_file" 2>/dev/null | cut -d '=' -f2- | tr -d '"' | tr -d "'" | tr -d '\r' | xargs || true
+        }
+        DB_NAME="${DB_NAME:-$(get_val DB_NAME)}"
+        DB_USER="${DB_USER:-$(get_val DB_USER)}"
+        DB_PASSWORD="${DB_PASSWORD:-$(get_val DB_PASSWORD)}"
+        DB_HOST="${DB_HOST:-$(get_val DB_HOST)}"
+        DB_PORT="${DB_PORT:-$(get_val DB_PORT)}"
+        DEPLOYMENT_STAGE="${DEPLOYMENT_STAGE:-$(get_val DEPLOYMENT_STAGE)}"
+        API_DOMAIN="${API_DOMAIN:-$(get_val API_DOMAIN)}"
+    fi
+}
+
+get_ready_url() {
+    local stage="${1:-bootstrap}"
+    local domain="${2:-}"
+    if [ "$stage" = "production" ]; then
+        if [ -z "$domain" ]; then
+            echo ""
+            return 1
+        fi
+        echo "https://${domain}/health/ready"
+    else
+        echo "http://127.0.0.1/health/ready"
+    fi
+}
+
+# Режим тестирования конфигурации
+if [ "${1:-}" = "--print-config" ]; then
+    load_restore_env "${2:-${BACKEND_DIR}/.env}"
+    echo "DB_NAME=${DB_NAME:-vote_db}"
+    echo "DB_USER=${DB_USER:-vote_user}"
+    echo "DB_HOST=${DB_HOST:-127.0.0.1}"
+    echo "DB_PORT=${DB_PORT:-5432}"
+    echo "DEPLOYMENT_STAGE=${DEPLOYMENT_STAGE:-bootstrap}"
+    echo "API_DOMAIN=${API_DOMAIN:-}"
+    READY_URL=$(get_ready_url "${DEPLOYMENT_STAGE:-bootstrap}" "${API_DOMAIN:-}" || true)
+    echo "READY_URL=${READY_URL}"
+    exit 0
+fi
+
 DUMP="${1:?Укажите файл дампа: ./scripts/restore.sh <dump_file>}"
 [ -f "$DUMP" ] || { echo "ОШИБКА: Файл не найден: $DUMP" >&2; exit 1; }
 
-# Загрузка переменных окружения из .env если файл существует
-if [ -f .env ]; then
-    export $(grep -E '^(DB_NAME|DB_USER|DB_PASSWORD)=' .env | xargs -d '\n' 2>/dev/null || grep -E '^(DB_NAME|DB_USER|DB_PASSWORD)=' .env || true)
-fi
+load_restore_env "${BACKEND_DIR}/.env"
 
 DB_NAME="${DB_NAME:-vote_db}"
 DB_USER="${DB_USER:-vote_user}"
 DB_HOST="${DB_HOST:-127.0.0.1}"
 DB_PORT="${DB_PORT:-5432}"
+DEPLOYMENT_STAGE="${DEPLOYMENT_STAGE:-bootstrap}"
+API_DOMAIN="${API_DOMAIN:-}"
 
 COMPOSE="docker compose -f docker-compose.prod.yml"
 
@@ -224,23 +267,49 @@ if [ "$USE_DOCKER" = true ]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 13. Проверка здоровья восстановленного сервиса
+# 13. Проверка здоровья восстановленного сервиса (ТЗ п.4, 5)
 # ------------------------------------------------------------------------------
-echo "==> [13/13] Проверка healthcheck приложения..."
+echo "==> [13/13] Проверка readiness приложения..."
 if [ "$USE_DOCKER" = true ]; then
-    sleep 3
-    READY_STATUS="unknown"
-    for i in {1..10}; do
-        if curl -fsS http://127.0.0.1/health/ready >/dev/null 2>&1 || curl -fsS http://localhost/health/ready >/dev/null 2>&1; then
-            READY_STATUS="ready"
-            break
+    READY_URL=$(get_ready_url "${DEPLOYMENT_STAGE}" "${API_DOMAIN}" || true)
+    if [ -z "${READY_URL}" ]; then
+        echo "ОШИБКА: restore DB completed, but application readiness failed!" >&2
+        echo "В режиме DEPLOYMENT_STAGE=production не задан API_DOMAIN в .env!" >&2
+        echo "Проверьте логи:" >&2
+        echo "  ${COMPOSE} logs app" >&2
+        echo "  ${COMPOSE} logs nginx" >&2
+        exit 1
+    fi
+
+    echo "    Целевой URL: ${READY_URL}"
+    echo "    (Строгая проверка HTTP 200; редиректы 301/302 не считаются успехом)"
+
+    READY_OK=false
+    BODY_FILE="/tmp/restore_ready_body_$$.txt"
+
+    for i in {1..20}; do
+        # curl без флага -L (не следуем за редиректами 301/302)
+        HTTP_CODE=$(curl -s -o "$BODY_FILE" -w "%{http_code}" "$READY_URL" 2>/dev/null || echo "000")
+        if [ "$HTTP_CODE" = "200" ]; then
+            if grep -q '"status":\s*"ready"' "$BODY_FILE" 2>/dev/null || grep -q '"database":\s*"ok"' "$BODY_FILE" 2>/dev/null || grep -q 'ready' "$BODY_FILE" 2>/dev/null; then
+                READY_OK=true
+                rm -f "$BODY_FILE"
+                break
+            fi
         fi
         sleep 2
     done
-    if [ "$READY_STATUS" = "ready" ]; then
-        echo "    /health/ready отвечает OK."
+    rm -f "$BODY_FILE"
+
+    if [ "$READY_OK" = true ]; then
+        echo "    [OK] /health/ready отвечает 200 OK."
     else
-        echo "    ПРЕДУПРЕЖДЕНИЕ: /health/ready не ответил сразу. Проверьте логи: ${COMPOSE} logs app"
+        echo "ОШИБКА: restore DB completed, but application readiness failed!" >&2
+        echo "Последний полученный HTTP-код: ${HTTP_CODE} (ожидался 200 OK)." >&2
+        echo "Проверьте логи:" >&2
+        echo "  ${COMPOSE} logs app" >&2
+        echo "  ${COMPOSE} logs nginx" >&2
+        exit 1
     fi
 fi
 
