@@ -6,6 +6,11 @@
 // Keep each shard <= 50 RPS so the production per-IP Nginx limiter is not
 // what we benchmark. Fixtures must contain synthetic students only and are
 // supplied at runtime; never commit JWTs to the repository.
+//
+// IMPORTANT: /voting/status/ has StudentActionThrottle=120/min per student.
+// With only ~60 synthetic JWTs, making status 30% of a 1000 RPS benchmark
+// measures the intentional per-student throttle instead of auth-read capacity.
+// Keep status at 5%; the main authenticated workload is /elections/available/.
 
 import http from 'k6/http';
 import { check } from 'k6';
@@ -39,11 +44,19 @@ const r500 = shardShare(500);
 const r750 = shardShare(750);
 const r1000 = shardShare(1000);
 
-const authFailures = new Rate('auth_read_failed');
+const responseFailures = new Rate('auth_read_failed');
 const serverErrors = new Rate('server_errors');
 const availableCount = new Counter('endpoint_available_requests');
 const detailCount = new Counter('endpoint_detail_requests');
 const statusCount = new Counter('endpoint_status_requests');
+const availableFailed = new Counter('endpoint_available_failed');
+const detailFailed = new Counter('endpoint_detail_failed');
+const statusFailed = new Counter('endpoint_status_failed');
+const status401 = new Counter('status_401');
+const status403 = new Counter('status_403');
+const status404 = new Counter('status_404');
+const status429 = new Counter('status_429');
+const other4xx = new Counter('status_other_4xx');
 
 export const options = {
   discardResponseBodies: true,
@@ -75,11 +88,19 @@ export const options = {
   },
 };
 
+function recordStatus(res) {
+  if (res.status === 401) status401.add(1);
+  else if (res.status === 403) status403.add(1);
+  else if (res.status === 404) status404.add(1);
+  else if (res.status === 429) status429.add(1);
+  else if (res.status >= 400 && res.status < 500) other4xx.add(1);
+}
+
 export default function () {
   const seed = Math.floor(Math.random() * fixtures.students.length);
   const pair = pickEligible(fixtures, byUniversity, seed);
   if (!pair) {
-    authFailures.add(true);
+    responseFailures.add(true);
     return;
   }
 
@@ -90,19 +111,31 @@ export default function () {
 
   const roll = Math.random();
   let res;
-  if (roll < 0.4) {
+  let endpoint;
+
+  if (roll < 0.80) {
+    endpoint = 'available';
     availableCount.add(1);
     res = http.get(`${BASE_URL}/api/v1/elections/available/`, opts);
-  } else if (roll < 0.7) {
+  } else if (roll < 0.95) {
+    endpoint = 'detail';
     detailCount.add(1);
     res = http.get(`${BASE_URL}/api/v1/elections/${election.id}/`, opts);
   } else {
+    endpoint = 'status';
     statusCount.add(1);
     res = http.get(`${BASE_URL}/api/v1/voting/status/${election.id}/`, opts);
   }
 
   const ok = res.status === 200;
+  if (!ok) {
+    if (endpoint === 'available') availableFailed.add(1);
+    else if (endpoint === 'detail') detailFailed.add(1);
+    else statusFailed.add(1);
+    recordStatus(res);
+  }
+
   check(res, { 'HTTP 200': () => ok });
-  authFailures.add(!ok);
+  responseFailures.add(!ok);
   serverErrors.add(res.status >= 500);
 }
