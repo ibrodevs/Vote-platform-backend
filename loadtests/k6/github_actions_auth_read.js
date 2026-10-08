@@ -15,8 +15,18 @@ import { authHeaders, indexElectionsByUniversity, loadFixtures, pickEligible } f
 const BASE_URL = 'https://api.dobush.kg';
 const SHARDS = Number(__ENV.SHARDS || '20');
 const SHARD = Number(__ENV.SHARD || '1');
-const fixtures = loadFixtures();
+const fixtures = __ENV.FIXTURES_JSON ? JSON.parse(__ENV.FIXTURES_JSON) : loadFixtures();
 const byUniversity = indexElectionsByUniversity(fixtures);
+
+if (!fixtures.students || fixtures.students.length < 20) {
+  throw new Error('Need at least 20 synthetic student fixtures');
+}
+if (!fixtures.elections || fixtures.elections.length === 0) {
+  throw new Error('Need at least one active synthetic election fixture');
+}
+if (!fixtures.students.every((s) => String(s.code || '').startsWith('synthetic-'))) {
+  throw new Error('Refusing non-synthetic student fixtures');
+}
 
 function shardShare(total) {
   const base = Math.floor(total / SHARDS);
@@ -66,8 +76,6 @@ export const options = {
 };
 
 export default function () {
-  // Pick a synthetic student and an election from the same university so
-  // detail/status measure normal authorized reads rather than rejections.
   const seed = Math.floor(Math.random() * fixtures.students.length);
   const pair = pickEligible(fixtures, byUniversity, seed);
   if (!pair) {
