@@ -1,0 +1,300 @@
+name: Authorized 40k Cached API Load Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type exactly: LOAD 40K api.dobush.kg'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vote-platform-production-load-test
+  cancel-in-progress: false
+
+env:
+  TARGET_URL: https://api.dobush.kg/api/v1/universities/
+  SHARDS: '20'
+
+jobs:
+  prepare:
+    name: Validate authorized target
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      start_epoch: ${{ steps.sync.outputs.start_epoch }}
+    steps:
+      - name: Require explicit confirmation
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "LOAD 40K api.dobush.kg" ]; then
+            echo 'Confirmation does not match. Refusing to start the production load test.'
+            exit 1
+          fi
+
+      - name: Verify target and Nginx cache
+        run: |
+          set -euo pipefail
+
+          # The target is hard-coded on purpose. This workflow must not be
+          # reusable as a generic load generator against arbitrary hosts.
+          python3 - <<'PY'
+          from urllib.parse import urlparse
+          import os
+
+          url = os.environ['TARGET_URL']
+          parsed = urlparse(url)
+          assert parsed.scheme == 'https', parsed.scheme
+          assert parsed.hostname == 'api.dobush.kg', parsed.hostname
+          assert parsed.path == '/api/v1/universities/', parsed.path
+          assert not parsed.query, 'query string would bypass the intended cache path'
+          print('Authorized target:', url)
+          PY
+
+          # Warm once, then require a healthy cached response.
+          curl --fail --silent --show-error --output /dev/null "$TARGET_URL"
+          sleep 1
+
+          headers="$(mktemp)"
+          code="$(curl --silent --show-error --dump-header "$headers" --output /dev/null --write-out '%{http_code}' "$TARGET_URL")"
+          cache="$(awk 'BEGIN{IGNORECASE=1} /^x-cache-status:/ {gsub("\\r", "", $2); print toupper($2)}' "$headers" | tail -n1)"
+
+          echo "HTTP=$code cache=$cache"
+          test "$code" = '200'
+          case "$cache" in
+            HIT|STALE|UPDATING|REVALIDATED) ;;
+            *) echo "Expected a cache-served response, got X-Cache-Status=$cache"; exit 1 ;;
+          esac
+
+      - name: Choose synchronized start time
+        id: sync
+        run: |
+          # Give all 20 runners enough time to be allocated and install k6.
+          start_epoch=$(( $(date +%s) + 120 ))
+          echo "start_epoch=$start_epoch" >> "$GITHUB_OUTPUT"
+          echo "All shards will start at Unix time $start_epoch"
+
+  load:
+    name: Load shard ${{ matrix.shard }}/20
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup k6
+        uses: grafana/setup-k6-action@v1
+
+      - name: Show generator
+        run: |
+          echo "shard=${{ matrix.shard }}/20"
+          echo "runner=$(hostname)"
+          echo "cpu=$(nproc)"
+          free -h
+          k6 version
+
+      - name: Wait for pre-start window
+        env:
+          START_EPOCH: ${{ needs.prepare.outputs.start_epoch }}
+        run: |
+          set -euo pipefail
+          prestart=$(( START_EPOCH - 5 ))
+          while [ "$(date +%s)" -lt "$prestart" ]; do
+            sleep 1
+          done
+
+      - name: Warm cache immediately before load
+        if: matrix.shard == 1
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --output /dev/null "$TARGET_URL"
+          curl --fail --silent --show-error --output /dev/null "$TARGET_URL"
+          echo 'Cache warmed by shard 1.'
+
+      - name: Wait for synchronized start
+        env:
+          START_EPOCH: ${{ needs.prepare.outputs.start_epoch }}
+        run: |
+          set -euo pipefail
+          now="$(date +%s)"
+          if [ "$now" -gt "$START_EPOCH" ]; then
+            echo "WARNING: shard started $(( now - START_EPOCH ))s late"
+          fi
+          while [ "$(date +%s)" -lt "$START_EPOCH" ]; do
+            sleep 0.2
+          done
+          echo "Starting shard ${{ matrix.shard }} at $(date -u +%FT%TZ)"
+
+      - name: Run distributed k6 shard
+        id: k6
+        env:
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -o pipefail
+          set +e
+
+          k6 run \
+            --summary-export="summary-${{ matrix.shard }}.json" \
+            loadtests/k6/github_actions_40k.js \
+            2>&1 | tee "k6-${{ matrix.shard }}.log"
+
+          code=${PIPESTATUS[0]}
+          echo "$code" > "exit-${{ matrix.shard }}.txt"
+          echo "k6 exit code: $code"
+
+          # Always continue so the final aggregation job can collect every
+          # shard and report one useful result instead of stopping early.
+          exit 0
+
+      - name: Upload shard result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-shard-${{ matrix.shard }}
+          path: |
+            summary-${{ matrix.shard }}.json
+            exit-${{ matrix.shard }}.txt
+            k6-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 1
+
+  summary:
+    name: Aggregate 20 shards
+    if: always()
+    needs: [prepare, load]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download shard results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: k6-shard-*
+          path: results
+          merge-multiple: true
+
+      - name: Build aggregate report
+        env:
+          EXPECTED_SHARDS: '20'
+        run: |
+          python3 - <<'PY'
+          import glob
+          import json
+          import math
+          import os
+          import sys
+
+          files = sorted(glob.glob('results/summary-*.json'))
+          expected_shards = int(os.environ['EXPECTED_SHARDS'])
+
+          def metric(data, name, key, default=0.0):
+              try:
+                  return data['metrics'][name]['values'].get(key, default)
+              except Exception:
+                  return default
+
+          rows = []
+          for path in files:
+              with open(path, encoding='utf-8') as fh:
+                  data = json.load(fh)
+
+              shard = int(path.rsplit('-', 1)[1].split('.')[0])
+              reqs = float(metric(data, 'http_reqs', 'count', 0))
+              dropped = float(metric(data, 'dropped_iterations', 'count', 0))
+              failed = float(metric(data, 'http_req_failed', 'rate', 0))
+              p95 = float(metric(data, 'http_req_duration', 'p(95)', 0))
+              cache_bad = float(metric(data, 'cache_non_hit', 'rate', 0))
+              checks = float(metric(data, 'checks', 'rate', 0))
+
+              rows.append({
+                  'shard': shard,
+                  'reqs': reqs,
+                  'dropped': dropped,
+                  'failed': failed,
+                  'p95': p95,
+                  'cache_bad': cache_bad,
+                  'checks': checks,
+              })
+
+          rows.sort(key=lambda r: r['shard'])
+          total_reqs = sum(r['reqs'] for r in rows)
+          total_dropped = sum(r['dropped'] for r in rows)
+          weighted_fail = (
+              sum(r['failed'] * r['reqs'] for r in rows) / total_reqs
+              if total_reqs else 1.0
+          )
+          weighted_cache_bad = (
+              sum(r['cache_bad'] * r['reqs'] for r in rows) / total_reqs
+              if total_reqs else 1.0
+          )
+          worst_p95 = max((r['p95'] for r in rows), default=0.0)
+          worst_checks = min((r['checks'] for r in rows), default=0.0)
+
+          # Scheduled requests per shard, ignoring tiny executor rounding:
+          # 30s*500 + 10s*(500+1000)/2 + 30s*1000
+          # + 10s*(1000+2000)/2 + 60s*2000 = 187,500.
+          expected_total = 187500 * expected_shards
+          delivered_ratio = total_reqs / expected_total if expected_total else 0.0
+
+          report = []
+          report.append('# Distributed cached API load test')
+          report.append('')
+          report.append('Planned aggregate ladder: **10k RPS (30s) → 20k RPS (30s) → 40k RPS (60s)**, with 10s ramps.')
+          report.append('')
+          report.append(f'- Shard summaries received: **{len(rows)}/{expected_shards}**')
+          report.append(f'- Total HTTP requests: **{int(total_reqs):,}**')
+          report.append(f'- Expected scheduled requests: **~{expected_total:,}**')
+          report.append(f'- Delivered / scheduled: **{delivered_ratio * 100:.2f}%**')
+          report.append(f'- Dropped iterations: **{int(total_dropped):,}**')
+          report.append(f'- Weighted HTTP failure rate: **{weighted_fail * 100:.4f}%**')
+          report.append(f'- Worst shard p95: **{worst_p95:.1f} ms**')
+          report.append(f'- Weighted non-hit cache responses: **{weighted_cache_bad * 100:.4f}%**')
+          report.append(f'- Worst shard check rate: **{worst_checks * 100:.4f}%**')
+          report.append('')
+          report.append('| Shard | Requests | Dropped | HTTP failed | p95 ms | Cache non-hit |')
+          report.append('|---:|---:|---:|---:|---:|---:|')
+          for r in rows:
+              report.append(
+                  f"| {r['shard']} | {int(r['reqs']):,} | {int(r['dropped']):,} | "
+                  f"{r['failed']*100:.4f}% | {r['p95']:.1f} | {r['cache_bad']*100:.4f}% |"
+              )
+
+          text = '\n'.join(report) + '\n'
+          print(text)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as out:
+              out.write(text)
+
+          ok = True
+          if len(rows) != expected_shards:
+              print('FAIL: not all 20 generators produced summaries')
+              ok = False
+          if delivered_ratio < 0.97:
+              print('FAIL: generators delivered less than 97% of the scheduled request volume')
+              ok = False
+          if total_dropped > 0:
+              print('FAIL: k6 dropped iterations; the generators could not schedule the requested load')
+              ok = False
+          if weighted_fail >= 0.001:
+              print('FAIL: HTTP failure rate is >= 0.1%')
+              ok = False
+          if worst_p95 >= 500:
+              print('FAIL: at least one shard has p95 >= 500 ms')
+              ok = False
+          if weighted_cache_bad >= 0.01:
+              print('FAIL: >= 1% of responses were not HIT/STALE/UPDATING/REVALIDATED')
+              ok = False
+
+          if not ok:
+              sys.exit(1)
+          PY
