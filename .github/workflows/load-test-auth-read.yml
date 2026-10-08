@@ -1,0 +1,116 @@
+name: Authorized Authenticated Read Load Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type exactly: LOAD AUTH api.dobush.kg'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vote-platform-production-load-test
+  cancel-in-progress: false
+
+env:
+  SHARDS: '20'
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      start_epoch: ${{ steps.sync.outputs.start_epoch }}
+    steps:
+      - name: Validate confirmation and secret
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          FIXTURES_JSON: ${{ secrets.LOADTEST_FIXTURES_JSON }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRM" = 'LOAD AUTH api.dobush.kg'
+          test -n "$FIXTURES_JSON" || { echo 'Missing LOADTEST_FIXTURES_JSON'; exit 1; }
+      - name: Check production readiness
+        run: curl --fail --silent --show-error --output /dev/null https://api.dobush.kg/api/v1/health/ready/
+      - name: Choose synchronized start
+        id: sync
+        run: |
+          start_epoch=$(( $(date +%s) + 120 ))
+          echo "start_epoch=$start_epoch" >> "$GITHUB_OUTPUT"
+
+  load:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: grafana/setup-k6-action@v1
+      - name: Wait for synchronized start
+        env:
+          START_EPOCH: ${{ needs.prepare.outputs.start_epoch }}
+        run: |
+          while [ "$(date +%s)" -lt "$START_EPOCH" ]; do sleep 0.2; done
+      - name: Run authenticated read shard
+        env:
+          SHARD: ${{ matrix.shard }}
+          FIXTURES_JSON: ${{ secrets.LOADTEST_FIXTURES_JSON }}
+        run: |
+          set -o pipefail
+          set +e
+          k6 run --summary-export="summary-${{ matrix.shard }}.json" loadtests/k6/github_actions_auth_read.js 2>&1 | tee "k6-${{ matrix.shard }}.log"
+          code=${PIPESTATUS[0]}
+          echo "$code" > "exit-${{ matrix.shard }}.txt"
+          exit 0
+      - name: Upload shard result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-auth-${{ matrix.shard }}
+          path: |
+            summary-${{ matrix.shard }}.json
+            exit-${{ matrix.shard }}.txt
+            k6-${{ matrix.shard }}.log
+          retention-days: 1
+
+  summary:
+    if: always()
+    needs: [prepare, load]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: k6-auth-*
+          path: results
+          merge-multiple: true
+      - name: Aggregate authenticated reads
+        run: |
+          python3 - <<'PY'
+          import glob,json,os,sys
+          def m(d,n,k,default=0.0):
+              o=d.get('metrics',{}).get(n,{})
+              v=o.get('values') if isinstance(o,dict) else None
+              s=v if isinstance(v,dict) else (o if isinstance(o,dict) else {})
+              if k=='rate': return s.get('rate',s.get('value',default))
+              return s.get(k,default)
+          rows=[]
+          for p in glob.glob('results/summary-*.json'):
+              i=int(p.rsplit('-',1)[1].split('.')[0]); d=json.load(open(p))
+              try: x=int(open(f'results/exit-{i}.txt').read().strip())
+              except: x=999
+              rows.append((i,m(d,'http_reqs','count'),m(d,'dropped_iterations','count'),m(d,'http_req_failed','rate'),m(d,'http_req_duration','p(95)'),m(d,'checks','rate'),m(d,'server_errors','rate'),m(d,'auth_read_failed','rate'),x))
+          rows.sort(); total=sum(r[1] for r in rows); expected=123750
+          w=lambda idx: sum(r[idx]*r[1] for r in rows)/total if total else 1
+          fail=w(3); server=w(6); auth=w(7); drop=sum(r[2] for r in rows); p95=max((r[4] for r in rows),default=0); checks=min((r[5] for r in rows),default=0); bad=[r[0] for r in rows if r[8]!=0]; delivered=total/expected if expected else 0
+          text=f'''# Authenticated read load test\n\n- Shards: **{len(rows)}/20**\n- Requests: **{int(total):,}** / ~{expected:,}\n- Delivered: **{delivered*100:.2f}%**\n- Dropped: **{int(drop)}**\n- HTTP failed: **{fail*100:.4f}%**\n- Auth failed: **{auth*100:.4f}%**\n- 5xx: **{server*100:.4f}%**\n- Worst p95: **{p95:.1f} ms**\n- Worst check rate: **{checks*100:.4f}%**\n- Non-zero k6 exits: **{bad or "none"}**\n'''
+          print(text)
+          open(os.environ['GITHUB_STEP_SUMMARY'],'a').write(text)
+          ok=len(rows)==20 and delivered>=.97 and drop==0 and fail<.001 and auth<.001 and server<.001 and p95<300 and checks>.999 and not bad
+          sys.exit(0 if ok else 1)
+          PY
