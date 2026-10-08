@@ -40,9 +40,6 @@ jobs:
       - name: Verify target and Nginx cache
         run: |
           set -euo pipefail
-
-          # The target is hard-coded on purpose. This workflow must not be
-          # reusable as a generic load generator against arbitrary hosts.
           python3 - <<'PY'
           from urllib.parse import urlparse
           import os
@@ -56,7 +53,6 @@ jobs:
           print('Authorized target:', url)
           PY
 
-          # Warm once, then require a healthy cached response.
           curl --fail --silent --show-error --output /dev/null "$TARGET_URL"
           sleep 1
 
@@ -74,7 +70,6 @@ jobs:
       - name: Choose synchronized start time
         id: sync
         run: |
-          # Give all 20 runners enough time to be allocated and install k6.
           start_epoch=$(( $(date +%s) + 120 ))
           echo "start_epoch=$start_epoch" >> "$GITHUB_OUTPUT"
           echo "All shards will start at Unix time $start_epoch"
@@ -153,9 +148,6 @@ jobs:
           code=${PIPESTATUS[0]}
           echo "$code" > "exit-${{ matrix.shard }}.txt"
           echo "k6 exit code: $code"
-
-          # Always continue so the final aggregation job can collect every
-          # shard and report one useful result instead of stopping early.
           exit 0
 
       - name: Upload shard result
@@ -191,7 +183,6 @@ jobs:
           python3 - <<'PY'
           import glob
           import json
-          import math
           import os
           import sys
 
@@ -199,10 +190,25 @@ jobs:
           expected_shards = int(os.environ['EXPECTED_SHARDS'])
 
           def metric(data, name, key, default=0.0):
+              """Read both legacy/summary-export and newer summary shapes."""
               try:
-                  return data['metrics'][name]['values'].get(key, default)
+                  obj = data['metrics'][name]
               except Exception:
                   return default
+
+              if not isinstance(obj, dict):
+                  return default
+
+              values = obj.get('values')
+              source = values if isinstance(values, dict) else obj
+
+              if key == 'rate':
+                  if 'rate' in source:
+                      return source['rate']
+                  if 'value' in source:
+                      return source['value']
+
+              return source.get(key, default)
 
           rows = []
           for path in files:
@@ -210,6 +216,13 @@ jobs:
                   data = json.load(fh)
 
               shard = int(path.rsplit('-', 1)[1].split('.')[0])
+              exit_path = f'results/exit-{shard}.txt'
+              try:
+                  with open(exit_path, encoding='utf-8') as fh:
+                      exit_code = int(fh.read().strip())
+              except Exception:
+                  exit_code = 999
+
               reqs = float(metric(data, 'http_reqs', 'count', 0))
               dropped = float(metric(data, 'dropped_iterations', 'count', 0))
               failed = float(metric(data, 'http_req_failed', 'rate', 0))
@@ -225,6 +238,7 @@ jobs:
                   'p95': p95,
                   'cache_bad': cache_bad,
                   'checks': checks,
+                  'exit_code': exit_code,
               })
 
           rows.sort(key=lambda r: r['shard'])
@@ -240,10 +254,10 @@ jobs:
           )
           worst_p95 = max((r['p95'] for r in rows), default=0.0)
           worst_checks = min((r['checks'] for r in rows), default=0.0)
+          bad_exit_codes = [r['shard'] for r in rows if r['exit_code'] != 0]
 
-          # Scheduled requests per shard, ignoring tiny executor rounding:
           # 30s*500 + 10s*(500+1000)/2 + 30s*1000
-          # + 10s*(1000+2000)/2 + 60s*2000 = 187,500.
+          # + 10s*(1000+2000)/2 + 60s*2000 = 187,500 per shard.
           expected_total = 187500 * expected_shards
           delivered_ratio = total_reqs / expected_total if expected_total else 0.0
 
@@ -261,13 +275,15 @@ jobs:
           report.append(f'- Worst shard p95: **{worst_p95:.1f} ms**')
           report.append(f'- Weighted non-hit cache responses: **{weighted_cache_bad * 100:.4f}%**')
           report.append(f'- Worst shard check rate: **{worst_checks * 100:.4f}%**')
+          report.append(f'- Non-zero k6 exit codes: **{bad_exit_codes or "none"}**')
           report.append('')
-          report.append('| Shard | Requests | Dropped | HTTP failed | p95 ms | Cache non-hit |')
-          report.append('|---:|---:|---:|---:|---:|---:|')
+          report.append('| Shard | Requests | Dropped | HTTP failed | p95 ms | Cache non-hit | k6 exit |')
+          report.append('|---:|---:|---:|---:|---:|---:|---:|')
           for r in rows:
               report.append(
                   f"| {r['shard']} | {int(r['reqs']):,} | {int(r['dropped']):,} | "
-                  f"{r['failed']*100:.4f}% | {r['p95']:.1f} | {r['cache_bad']*100:.4f}% |"
+                  f"{r['failed']*100:.4f}% | {r['p95']:.1f} | "
+                  f"{r['cache_bad']*100:.4f}% | {r['exit_code']} |"
               )
 
           text = '\n'.join(report) + '\n'
@@ -279,11 +295,14 @@ jobs:
           if len(rows) != expected_shards:
               print('FAIL: not all 20 generators produced summaries')
               ok = False
+          if bad_exit_codes:
+              print(f'FAIL: k6 returned non-zero exit code on shards: {bad_exit_codes}')
+              ok = False
           if delivered_ratio < 0.97:
               print('FAIL: generators delivered less than 97% of the scheduled request volume')
               ok = False
           if total_dropped > 0:
-              print('FAIL: k6 dropped iterations; the generators could not schedule the requested load')
+              print('FAIL: k6 dropped iterations; generators could not schedule the requested load')
               ok = False
           if weighted_fail >= 0.001:
               print('FAIL: HTTP failure rate is >= 0.1%')
@@ -293,6 +312,9 @@ jobs:
               ok = False
           if weighted_cache_bad >= 0.01:
               print('FAIL: >= 1% of responses were not HIT/STALE/UPDATING/REVALIDATED')
+              ok = False
+          if worst_checks <= 0.999:
+              print('FAIL: at least one shard did not maintain the HTTP 200 check threshold')
               ok = False
 
           if not ok:
