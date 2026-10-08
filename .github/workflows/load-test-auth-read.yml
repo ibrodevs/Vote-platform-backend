@@ -99,18 +99,42 @@ jobs:
               s=v if isinstance(v,dict) else (o if isinstance(o,dict) else {})
               if k=='rate': return s.get('rate',s.get('value',default))
               return s.get(k,default)
+
           rows=[]
           for p in glob.glob('results/summary-*.json'):
               i=int(p.rsplit('-',1)[1].split('.')[0]); d=json.load(open(p))
               try: x=int(open(f'results/exit-{i}.txt').read().strip())
               except: x=999
-              rows.append((i,m(d,'http_reqs','count'),m(d,'dropped_iterations','count'),m(d,'http_req_failed','rate'),m(d,'http_req_duration','p(95)'),m(d,'checks','rate'),m(d,'server_errors','rate'),m(d,'auth_read_failed','rate'),x))
-          rows.sort(); total=sum(r[1] for r in rows); expected=123750
-          w=lambda idx: sum(r[idx]*r[1] for r in rows)/total if total else 1
-          fail=w(3); server=w(6); auth=w(7); drop=sum(r[2] for r in rows); p95=max((r[4] for r in rows),default=0); checks=min((r[5] for r in rows),default=0); bad=[r[0] for r in rows if r[8]!=0]; delivered=total/expected if expected else 0
-          text=f'''# Authenticated read load test\n\n- Shards: **{len(rows)}/20**\n- Requests: **{int(total):,}** / ~{expected:,}\n- Delivered: **{delivered*100:.2f}%**\n- Dropped: **{int(drop)}**\n- HTTP failed: **{fail*100:.4f}%**\n- Auth failed: **{auth*100:.4f}%**\n- 5xx: **{server*100:.4f}%**\n- Worst p95: **{p95:.1f} ms**\n- Worst check rate: **{checks*100:.4f}%**\n- Non-zero k6 exits: **{bad or "none"}**\n'''
+              rows.append({
+                  'shard': i,
+                  'reqs': m(d,'http_reqs','count'),
+                  'drop': m(d,'dropped_iterations','count'),
+                  'fail': m(d,'http_req_failed','rate'),
+                  'p95': m(d,'http_req_duration','p(95)'),
+                  'checks': m(d,'checks','rate'),
+                  'server': m(d,'server_errors','rate'),
+                  'non200': m(d,'auth_read_failed','rate'),
+                  'exit': x,
+                  '401': m(d,'status_401','count'),
+                  '403': m(d,'status_403','count'),
+                  '404': m(d,'status_404','count'),
+                  '429': m(d,'status_429','count'),
+                  'other4xx': m(d,'status_other_4xx','count'),
+                  'avail_fail': m(d,'endpoint_available_failed','count'),
+                  'detail_fail': m(d,'endpoint_detail_failed','count'),
+                  'status_fail': m(d,'endpoint_status_failed','count'),
+              })
+          rows.sort(key=lambda r:r['shard'])
+          total=sum(r['reqs'] for r in rows); expected=123750
+          weighted=lambda key: sum(r[key]*r['reqs'] for r in rows)/total if total else 1
+          fail=weighted('fail'); server=weighted('server'); non200=weighted('non200')
+          drop=sum(r['drop'] for r in rows); p95=max((r['p95'] for r in rows),default=0)
+          checks=min((r['checks'] for r in rows),default=0); bad=[r['shard'] for r in rows if r['exit']!=0]
+          delivered=total/expected if expected else 0
+          sums={k:int(sum(r[k] for r in rows)) for k in ['401','403','404','429','other4xx','avail_fail','detail_fail','status_fail']}
+          text=f'''# Authenticated read load test\n\n- Shards: **{len(rows)}/20**\n- Requests: **{int(total):,}** / ~{expected:,}\n- Delivered: **{delivered*100:.2f}%**\n- Dropped: **{int(drop)}**\n- HTTP failed: **{fail*100:.4f}%**\n- Non-200 responses: **{non200*100:.4f}%**\n- 5xx: **{server*100:.4f}%**\n- Worst p95: **{p95:.1f} ms**\n- Worst check rate: **{checks*100:.4f}%**\n- Non-zero k6 exits: **{bad or "none"}**\n\n## Failure diagnostics\n\n- 401: **{sums['401']:,}**\n- 403: **{sums['403']:,}**\n- 404: **{sums['404']:,}**\n- 429: **{sums['429']:,}**\n- Other 4xx: **{sums['other4xx']:,}**\n- available failures: **{sums['avail_fail']:,}**\n- detail failures: **{sums['detail_fail']:,}**\n- status failures: **{sums['status_fail']:,}**\n'''
           print(text)
           open(os.environ['GITHUB_STEP_SUMMARY'],'a').write(text)
-          ok=len(rows)==20 and delivered>=.97 and drop==0 and fail<.001 and auth<.001 and server<.001 and p95<300 and checks>.999 and not bad
+          ok=len(rows)==20 and delivered>=.97 and drop==0 and fail<.001 and non200<.001 and server<.001 and p95<300 and checks>.999 and not bad
           sys.exit(0 if ok else 1)
           PY
