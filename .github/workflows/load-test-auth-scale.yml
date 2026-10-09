@@ -1,0 +1,230 @@
+name: Authorized Auth Scale Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_rps:
+        description: 'Aggregate JWT-authenticated RPS target'
+        required: true
+        type: choice
+        default: '5000'
+        options:
+          - '5000'
+          - '10000'
+          - '20000'
+          - '40000'
+      confirm:
+        description: 'Type exactly: LOAD AUTH SCALE api.dobush.kg'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vote-platform-production-load-test
+  cancel-in-progress: false
+
+env:
+  SHARDS: '20'
+
+jobs:
+  prepare:
+    name: Validate authorized auth-scale target
+    runs-on: ubuntu-24.04
+    timeout-minutes: 4
+    outputs:
+      start_epoch: ${{ steps.sync.outputs.start_epoch }}
+    steps:
+      - name: Validate confirmation, target and fixtures
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          TARGET_RPS: ${{ inputs.target_rps }}
+          FIXTURES_JSON: ${{ secrets.LOADTEST_FIXTURES_JSON }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRM" = 'LOAD AUTH SCALE api.dobush.kg'
+          case "$TARGET_RPS" in
+            5000|10000|20000|40000) ;;
+            *) echo "Unsupported target: $TARGET_RPS"; exit 1 ;;
+          esac
+          test -n "$FIXTURES_JSON" || { echo 'Missing LOADTEST_FIXTURES_JSON'; exit 1; }
+          python3 - <<'PY'
+          import json, os
+          data=json.loads(os.environ['FIXTURES_JSON'])
+          students=data.get('students', [])
+          assert len(students) >= 20, 'need at least 20 fixtures'
+          assert all(str(s.get('code','')).startswith('synthetic-') for s in students), 'non-synthetic fixture refused'
+          print('Synthetic fixtures:', len(students))
+          PY
+
+      - name: Check production readiness
+        run: curl --fail --silent --show-error --output /dev/null https://api.dobush.kg/health/ready
+
+      - name: Choose synchronized start
+        id: sync
+        run: |
+          start_epoch=$(( $(date +%s) + 120 ))
+          echo "start_epoch=$start_epoch" >> "$GITHUB_OUTPUT"
+          echo "Synchronized start: $start_epoch"
+
+  load:
+    name: Auth scale shard ${{ matrix.shard }}/20
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup k6
+        uses: grafana/setup-k6-action@v1
+
+      - name: Wait for synchronized start
+        env:
+          START_EPOCH: ${{ needs.prepare.outputs.start_epoch }}
+        run: |
+          set -euo pipefail
+          while [ "$(date +%s)" -lt "$START_EPOCH" ]; do sleep 0.2; done
+
+      - name: Run authenticated scale shard
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: '20'
+          TARGET_RPS: ${{ inputs.target_rps }}
+          TEST_START_EPOCH: ${{ needs.prepare.outputs.start_epoch }}
+          FIXTURES_JSON: ${{ secrets.LOADTEST_FIXTURES_JSON }}
+        run: |
+          set -o pipefail
+          set +e
+          k6 run \
+            --summary-export="summary-${{ matrix.shard }}.json" \
+            loadtests/k6/github_actions_auth_scale.js \
+            2>&1 | tee "k6-${{ matrix.shard }}.log"
+          code=${PIPESTATUS[0]}
+          echo "$code" > "exit-${{ matrix.shard }}.txt"
+          echo "k6 exit code: $code"
+          exit 0
+
+      - name: Upload shard result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-auth-scale-${{ matrix.shard }}
+          path: |
+            summary-${{ matrix.shard }}.json
+            exit-${{ matrix.shard }}.txt
+            k6-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 1
+
+  summary:
+    name: Aggregate auth scale shards
+    if: always()
+    needs: [prepare, load]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Download shard results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: k6-auth-scale-*
+          path: results
+          merge-multiple: true
+
+      - name: Build aggregate report
+        env:
+          TARGET_RPS: ${{ inputs.target_rps }}
+          EXPECTED_SHARDS: '20'
+        run: |
+          python3 - <<'PY'
+          import glob, json, os, sys
+
+          target = int(os.environ['TARGET_RPS'])
+          expected_shards = int(os.environ['EXPECTED_SHARDS'])
+
+          def metric(data, name, key, default=0.0):
+              obj = data.get('metrics', {}).get(name, {})
+              if not isinstance(obj, dict):
+                  return default
+              values = obj.get('values')
+              source = values if isinstance(values, dict) else obj
+              if key == 'rate':
+                  return source.get('rate', source.get('value', default))
+              return source.get(key, default)
+
+          rows=[]
+          for path in glob.glob('results/summary-*.json'):
+              shard=int(path.rsplit('-',1)[1].split('.')[0])
+              with open(path, encoding='utf-8') as fh:
+                  data=json.load(fh)
+              try:
+                  with open(f'results/exit-{shard}.txt', encoding='utf-8') as fh:
+                      exit_code=int(fh.read().strip())
+              except Exception:
+                  exit_code=999
+              rows.append({
+                  'shard': shard,
+                  'reqs': float(metric(data,'http_reqs','count')),
+                  'dropped': float(metric(data,'dropped_iterations','count')),
+                  'failed': float(metric(data,'http_req_failed','rate')),
+                  'p95': float(metric(data,'http_req_duration','p(95)')),
+                  'checks': float(metric(data,'checks','rate')),
+                  'response_failed': float(metric(data,'auth_scale_response_failed','rate')),
+                  'server': float(metric(data,'server_errors','rate')),
+                  'cache': float(metric(data,'cache_served','rate')),
+                  'hold_reqs': float(metric(data,'hold_requests','count')),
+                  'hold_failed': float(metric(data,'hold_failed','rate')),
+                  'hold_p95': float(metric(data,'hold_duration','p(95)')),
+                  's401': float(metric(data,'status_401','count')),
+                  's403': float(metric(data,'status_403','count')),
+                  's429': float(metric(data,'status_429','count')),
+                  's5xx': float(metric(data,'status_5xx','count')),
+                  'exit': exit_code,
+              })
+
+          rows.sort(key=lambda x:x['shard'])
+          total=sum(r['reqs'] for r in rows)
+          hold_total=sum(r['hold_reqs'] for r in rows)
+          expected_total=target*69
+          expected_hold=target*60
+
+          def weighted(key, weight='reqs', default=1.0):
+              denom=sum(r[weight] for r in rows)
+              return sum(r[key]*r[weight] for r in rows)/denom if denom else default
+
+          failed=weighted('failed')
+          response_failed=weighted('response_failed')
+          server=weighted('server')
+          cache=weighted('cache')
+          hold_failed=weighted('hold_failed','hold_reqs')
+          drop=sum(r['dropped'] for r in rows)
+          p95=max((r['p95'] for r in rows), default=0)
+          hold_p95=max((r['hold_p95'] for r in rows), default=0)
+          checks=min((r['checks'] for r in rows), default=0)
+          bad=[r['shard'] for r in rows if r['exit'] != 0]
+          s401=int(sum(r['s401'] for r in rows)); s403=int(sum(r['s403'] for r in rows))
+          s429=int(sum(r['s429'] for r in rows)); s5xx=int(sum(r['s5xx'] for r in rows))
+          delivered=total/expected_total if expected_total else 0
+          hold_delivered=hold_total/expected_hold if expected_hold else 0
+
+          report=f'''# JWT authenticated scale test — {target:,} RPS\n\n- Shards: **{len(rows)}/{expected_shards}**\n- Total requests: **{int(total):,}** / ~{expected_total:,}\n- Total delivered: **{delivered*100:.2f}%**\n- 60s hold requests: **{int(hold_total):,}** / ~{expected_hold:,}\n- 60s hold delivered: **{hold_delivered*100:.2f}%**\n- Dropped iterations: **{int(drop):,}**\n- HTTP failed: **{failed*100:.4f}%**\n- Non-200: **{response_failed*100:.4f}%**\n- 5xx rate: **{server*100:.4f}%**\n- Worst overall p95: **{p95:.1f} ms**\n- Worst 60s-hold p95: **{hold_p95:.1f} ms**\n- Worst check rate: **{checks*100:.4f}%**\n- Cache-served responses: **{cache*100:.4f}%**\n- 401 / 403 / 429 / 5xx: **{s401} / {s403} / {s429} / {s5xx}**\n- Non-zero k6 exits: **{bad or "none"}**\n'''
+          print(report)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a',encoding='utf-8') as out:
+              out.write(report)
+
+          ok=(
+              len(rows)==expected_shards and
+              delivered>=0.97 and hold_delivered>=0.97 and
+              drop==0 and failed<0.001 and response_failed<0.001 and server<0.001 and
+              p95<300 and hold_p95<300 and checks>0.999 and cache<0.001 and
+              s401==0 and s403==0 and s429==0 and s5xx==0 and not bad
+          )
+          sys.exit(0 if ok else 1)
+          PY
