@@ -7,8 +7,16 @@ on:
         description: 'Aggregate JWT-authenticated RPS target'
         required: true
         type: choice
-        default: '5000'
+        default: '1500'
         options:
+          - '1000'
+          - '1250'
+          - '1500'
+          - '1750'
+          - '2000'
+          - '2500'
+          - '3000'
+          - '4000'
           - '5000'
           - '10000'
           - '20000'
@@ -45,7 +53,7 @@ jobs:
           set -euo pipefail
           test "$CONFIRM" = 'LOAD AUTH SCALE api.dobush.kg'
           case "$TARGET_RPS" in
-            5000|10000|20000|40000) ;;
+            1000|1250|1500|1750|2000|2500|3000|4000|5000|10000|20000|40000) ;;
             *) echo "Unsupported target: $TARGET_RPS"; exit 1 ;;
           esac
           test -n "$FIXTURES_JSON" || { echo 'Missing LOADTEST_FIXTURES_JSON'; exit 1; }
@@ -182,6 +190,7 @@ jobs:
                   'hold_reqs': float(metric(data,'hold_requests','count')),
                   'hold_failed': float(metric(data,'hold_failed','rate')),
                   'hold_p95': float(metric(data,'hold_duration','p(95)')),
+                  's0': float(metric(data,'status_0_timeout_or_network','count')),
                   's401': float(metric(data,'status_401','count')),
                   's403': float(metric(data,'status_403','count')),
                   's429': float(metric(data,'status_429','count')),
@@ -209,12 +218,13 @@ jobs:
           hold_p95=max((r['hold_p95'] for r in rows), default=0)
           checks=min((r['checks'] for r in rows), default=0)
           bad=[r['shard'] for r in rows if r['exit'] != 0]
-          s401=int(sum(r['s401'] for r in rows)); s403=int(sum(r['s403'] for r in rows))
-          s429=int(sum(r['s429'] for r in rows)); s5xx=int(sum(r['s5xx'] for r in rows))
+          s0=int(sum(r['s0'] for r in rows)); s401=int(sum(r['s401'] for r in rows))
+          s403=int(sum(r['s403'] for r in rows)); s429=int(sum(r['s429'] for r in rows))
+          s5xx=int(sum(r['s5xx'] for r in rows))
           delivered=total/expected_total if expected_total else 0
           hold_delivered=hold_total/expected_hold if expected_hold else 0
 
-          report=f'''# JWT authenticated scale test — {target:,} RPS\n\n- Shards: **{len(rows)}/{expected_shards}**\n- Total requests: **{int(total):,}** / ~{expected_total:,}\n- Total delivered: **{delivered*100:.2f}%**\n- 60s hold requests: **{int(hold_total):,}** / ~{expected_hold:,}\n- 60s hold delivered: **{hold_delivered*100:.2f}%**\n- Dropped iterations: **{int(drop):,}**\n- HTTP failed: **{failed*100:.4f}%**\n- Non-200: **{response_failed*100:.4f}%**\n- 5xx rate: **{server*100:.4f}%**\n- Worst overall p95: **{p95:.1f} ms**\n- Worst 60s-hold p95: **{hold_p95:.1f} ms**\n- Worst check rate: **{checks*100:.4f}%**\n- Cache-served responses: **{cache*100:.4f}%**\n- 401 / 403 / 429 / 5xx: **{s401} / {s403} / {s429} / {s5xx}**\n- Non-zero k6 exits: **{bad or "none"}**\n'''
+          report=f'''# JWT authenticated scale test — {target:,} RPS\n\n- Shards: **{len(rows)}/{expected_shards}**\n- Total requests: **{int(total):,}** / ~{expected_total:,}\n- Total delivered: **{delivered*100:.2f}%**\n- 60s hold requests: **{int(hold_total):,}** / ~{expected_hold:,}\n- 60s hold delivered: **{hold_delivered*100:.2f}%**\n- Dropped iterations: **{int(drop):,}**\n- HTTP failed: **{failed*100:.4f}%**\n- Non-200: **{response_failed*100:.4f}%**\n- 5xx rate: **{server*100:.4f}%**\n- Worst overall p95: **{p95:.1f} ms**\n- Worst 60s-hold p95: **{hold_p95:.1f} ms**\n- Worst check rate: **{checks*100:.4f}%**\n- Cache-served responses: **{cache*100:.4f}%**\n- Timeout/network status=0: **{s0:,}**\n- 401 / 403 / 429 / 5xx: **{s401} / {s403} / {s429} / {s5xx}**\n- Non-zero k6 exits: **{bad or "none"}**\n'''
           print(report)
           with open(os.environ['GITHUB_STEP_SUMMARY'],'a',encoding='utf-8') as out:
               out.write(report)
@@ -224,7 +234,7 @@ jobs:
               delivered>=0.97 and hold_delivered>=0.97 and
               drop==0 and failed<0.001 and response_failed<0.001 and server<0.001 and
               p95<300 and hold_p95<300 and checks>0.999 and cache<0.001 and
-              s401==0 and s403==0 and s429==0 and s5xx==0 and not bad
+              s0==0 and s401==0 and s403==0 and s429==0 and s5xx==0 and not bad
           )
           sys.exit(0 if ok else 1)
           PY
