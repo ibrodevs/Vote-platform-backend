@@ -5,7 +5,7 @@
 // public response cache. That lets us measure the JWT + Redis principal hot path
 // without measuring the per-student action throttle of protected endpoints.
 //
-// Run targets one at a time: 5k -> 10k -> 20k -> 40k aggregate RPS.
+// Find the ceiling progressively. Do not jump over a failed target.
 
 import http from 'k6/http';
 import { check } from 'k6';
@@ -17,10 +17,10 @@ const BASE_URL = 'https://api.dobush.kg';
 const URL = `${BASE_URL}/api/v1/universities/?auth_load=1`;
 const SHARDS = Number(__ENV.SHARDS || '20');
 const SHARD = Number(__ENV.SHARD || '1');
-const TARGET_TOTAL = Number(__ENV.TARGET_RPS || '5000');
+const TARGET_TOTAL = Number(__ENV.TARGET_RPS || '1500');
 const TEST_START_EPOCH = Number(__ENV.TEST_START_EPOCH || '0');
 const fixtures = __ENV.FIXTURES_JSON ? JSON.parse(__ENV.FIXTURES_JSON) : loadFixtures();
-const allowedTargets = [5000, 10000, 20000, 40000];
+const allowedTargets = [1000, 1250, 1500, 1750, 2000, 2500, 3000, 4000, 5000, 10000, 20000, 40000];
 
 if (!allowedTargets.includes(TARGET_TOTAL)) {
   throw new Error(`TARGET_RPS must be one of ${allowedTargets.join(', ')}`);
@@ -47,6 +47,7 @@ const cacheServed = new Rate('cache_served');
 const holdRequests = new Counter('hold_requests');
 const holdFailed = new Rate('hold_failed');
 const holdDuration = new Trend('hold_duration', true);
+const status0 = new Counter('status_0_timeout_or_network');
 const status401 = new Counter('status_401');
 const status403 = new Counter('status_403');
 const status429 = new Counter('status_429');
@@ -69,7 +70,6 @@ export const options = {
     },
   },
   thresholds: {
-    // Final SLOs. Guard rails below abort the run if production degrades badly.
     http_req_failed: ['rate<0.001'],
     checks: ['rate>0.999'],
     cache_served: ['rate<0.001'],
@@ -129,7 +129,8 @@ export default function () {
   serverErrors.add(res.status >= 500);
   cacheServed.add(served);
 
-  if (res.status === 401) status401.add(1);
+  if (res.status === 0) status0.add(1);
+  else if (res.status === 401) status401.add(1);
   else if (res.status === 403) status403.add(1);
   else if (res.status === 429) status429.add(1);
   else if (res.status >= 500) status5xx.add(1);
