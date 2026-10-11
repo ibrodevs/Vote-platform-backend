@@ -1,9 +1,9 @@
 // Authorized distributed JWT-authenticated scale benchmark.
 //
-// This deliberately uses a public read endpoint WITH Authorization and a query
-// string. DRF still runs CombinedJWTAuthentication, while Nginx must bypass the
-// public response cache. That lets us measure the JWT + Redis principal hot path
-// without measuring the per-student action throttle of protected endpoints.
+// Uses /elections/available/, a genuinely personalized endpoint that must run
+// CombinedJWTAuthentication and cannot be served from Nginx public cache.
+// This is intentionally harder than public cached traffic and represents the
+// real burst after students enter the account around election opening.
 //
 // Find the ceiling progressively. Do not jump over a failed target.
 
@@ -14,7 +14,7 @@ import { Counter, Rate, Trend } from 'k6/metrics';
 import { authHeaders, loadFixtures } from './lib/config.js';
 
 const BASE_URL = 'https://api.dobush.kg';
-const URL = `${BASE_URL}/api/v1/universities/?auth_load=1`;
+const URL = `${BASE_URL}/api/v1/elections/available/?auth_load=1`;
 const SHARDS = Number(__ENV.SHARDS || '20');
 const SHARD = Number(__ENV.SHARD || '1');
 const TARGET_TOTAL = Number(__ENV.TARGET_RPS || '1500');
@@ -93,7 +93,7 @@ function isCacheServed(res) {
 function optionsFor(token) {
   const opts = authHeaders(token);
   opts.timeout = '5s';
-  opts.tags = { endpoint: 'jwt_auth_scale' };
+  opts.tags = { endpoint: 'jwt_auth_available' };
   opts.headers['User-Agent'] = 'VotePlatformAuthorizedAuthScale';
   return opts;
 }
@@ -105,7 +105,7 @@ export function setup() {
     throw new Error(`Preflight valid JWT expected 200, got ${good.status}`);
   }
   if (isCacheServed(good)) {
-    throw new Error(`Preflight must bypass Nginx cache, got X-Cache-Status=${good.headers['X-Cache-Status']}`);
+    throw new Error(`Personalized endpoint must never be Nginx-cached, got X-Cache-Status=${good.headers['X-Cache-Status']}`);
   }
 
   const last = token.slice(-1);
@@ -144,6 +144,6 @@ export default function () {
 
   check(res, {
     'HTTP 200': () => ok,
-    'cache bypassed': () => !served,
+    'personalized response not edge-cached': () => !served,
   });
 }
