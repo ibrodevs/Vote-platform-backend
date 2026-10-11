@@ -1,25 +1,24 @@
 """Election-day student read hot paths.
 
-The active election/candidate payload is identical for every student of one
-university. Rebuilding it from PostgreSQL + DRF serializers for every JWT
-request is wasted work during the opening burst. This module caches only that
-shared, non-personal part for two seconds.
+The election/candidate payload is shared by many students. Rebuilding it from
+PostgreSQL + DRF serializers for every JWT request is wasted work during the
+opening burst. This module caches only non-personal data.
 
-`has_voted` is NEVER cached as false. Each request still checks VoteRecord in
-PostgreSQL, so Redis remains an accelerator and a stale cache cannot allow a
-double vote or hide an existing participation record.
+`has_voted` is NEVER cached as false. Each authenticated request still checks
+VoteRecord in PostgreSQL, so Redis remains an accelerator and a stale cache
+cannot allow a double vote or hide an existing participation record.
 """
 from copy import deepcopy
 
 from django.db.models import Prefetch
 from django.utils import timezone
-from rest_framework import status
+from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.candidates.models import Candidate
 from apps.core.cache import safe_get, safe_set
-from apps.core.cache_keys import active_elections_catalog
+from apps.core.cache_keys import active_elections_catalog, election_student_detail
 from apps.core.cache_policy import CachePolicy
 from apps.core.permissions import IsStudentAuthenticated
 from apps.voting.models import VoteRecord
@@ -27,6 +26,16 @@ from apps.voting.models import VoteRecord
 from .models import Election
 from .serializers import ElectionStudentSerializer
 from .views import StudentAvailableElectionsView
+
+
+def _absolutize_candidate_media(request, rows):
+    """Cached media paths are host-neutral; make them absolute per response."""
+    for election in rows:
+        for candidate in election.get('candidates') or ():
+            photo = candidate.get('photo')
+            if isinstance(photo, str) and photo.startswith('/'):
+                candidate['photo'] = request.build_absolute_uri(photo)
+    return rows
 
 
 class StudentAvailableElectionsHotView(APIView):
@@ -73,15 +82,6 @@ class StudentAvailableElectionsHotView(APIView):
         safe_set(key, data, timeout=CachePolicy.ACTIVE_ELECTIONS_CATALOG)
         return deepcopy(data)
 
-    @staticmethod
-    def _absolutize_media(request, rows):
-        for election in rows:
-            for candidate in election.get('candidates') or ():
-                photo = candidate.get('photo')
-                if isinstance(photo, str) and photo.startswith('/'):
-                    candidate['photo'] = request.build_absolute_uri(photo)
-        return rows
-
     def get(self, request):
         if request.query_params.get('all', 'false').lower() == 'true':
             # Preserve the existing full-history API contract outside the hot path.
@@ -112,5 +112,70 @@ class StudentAvailableElectionsHotView(APIView):
             row['has_voted'] = False
             available.append(row)
 
-        self._absolutize_media(request, available)
+        _absolutize_candidate_media(request, available)
         return Response(available, status=status.HTTP_200_OK)
+
+
+class StudentElectionDetailHotView(APIView):
+    """Shared detail payload + one personal VoteRecord lookup.
+
+    The endpoint intentionally stays AllowAny for API compatibility. Anonymous
+    requests are even cheaper after the first cache fill; requests carrying a
+    student JWT still receive personalized `has_voted` and `is_eligible`.
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    @staticmethod
+    def _shared_detail(pk):
+        key = election_student_detail(pk)
+        cached = safe_get(key)
+        if cached is not None:
+            return deepcopy(cached)
+
+        try:
+            election = (
+                Election.objects.select_related('university')
+                .prefetch_related(
+                    Prefetch(
+                        'candidates',
+                        queryset=(
+                            Candidate.objects.select_related('university', 'election')
+                            .order_by('order', 'created_at')
+                        ),
+                    )
+                )
+                .get(id=pk)
+            )
+        except Election.DoesNotExist:
+            return None
+
+        data = dict(ElectionStudentSerializer(election).data)
+        safe_set(key, data, timeout=CachePolicy.ELECTION_PUBLIC)
+        return deepcopy(data)
+
+    def get(self, request, pk):
+        data = self._shared_detail(pk)
+        if data is None:
+            return Response(
+                {'error': {'code': 'not_found', 'message': 'Выборы не найдены'}},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        is_student = getattr(request.user, 'is_student', False)
+        if is_student:
+            # UNIQUE(election, student) already provides the covering B-tree for
+            # this existence check. Never cache the negative answer.
+            data['has_voted'] = VoteRecord.objects.filter(
+                election_id=pk,
+                student_id=request.user.id,
+            ).exists()
+            data['is_eligible'] = (
+                str(request.user.university_id) == str(data.get('university'))
+            )
+        else:
+            data['has_voted'] = False
+            data['is_eligible'] = None
+
+        _absolutize_candidate_media(request, [data])
+        return Response(data, status=status.HTTP_200_OK)
