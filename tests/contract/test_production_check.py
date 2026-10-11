@@ -9,7 +9,10 @@ from apps.core import system_checks
 
 
 SAFE_PGBOUNCER_DATABASES = {
-    'default': {'DISABLE_SERVER_SIDE_CURSORS': True},
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'DISABLE_SERVER_SIDE_CURSORS': True,
+    },
 }
 
 
