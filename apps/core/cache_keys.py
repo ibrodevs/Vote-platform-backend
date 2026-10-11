@@ -36,6 +36,11 @@ def election_public(election_id) -> str:
     return f"{NAMESPACE}:election:{_normalize(election_id)}:public"
 
 
+def election_student_detail(election_id) -> str:
+    """Общая НЕперсональная часть student detail endpoint."""
+    return f"{NAMESPACE}:election:{_normalize(election_id)}:student-detail"
+
+
 def university(university_id) -> str:
     """Данные университета."""
     return f"{NAMESPACE}:university:{_normalize(university_id)}"
