@@ -8,6 +8,11 @@ from django.test import SimpleTestCase, override_settings
 from apps.core import system_checks
 
 
+SAFE_PGBOUNCER_DATABASES = {
+    'default': {'DISABLE_SERVER_SIDE_CURSORS': True},
+}
+
+
 class IndividualCheckTest(SimpleTestCase):
     @override_settings(DEBUG=True)
     def test_debug_enabled_fails(self):
@@ -163,6 +168,7 @@ class ProductionCheckCommandTest(SimpleTestCase):
         REDIS_URL='redis://localhost:6379/1',
         DB_BEHIND_PGBOUNCER=True,
         DB_CONN_MAX_AGE=0,
+        DATABASES=SAFE_PGBOUNCER_DATABASES,
         CACHES={'default': {'BACKEND': 'django.core.cache.backends.redis.RedisCache'}},
         AWS_STORAGE_BUCKET_NAME='vote-media',
     )
@@ -188,6 +194,7 @@ class ProductionCheckCommandTest(SimpleTestCase):
         REDIS_URL='redis://localhost:6379/1',
         DB_BEHIND_PGBOUNCER=True,
         DB_CONN_MAX_AGE=0,
+        DATABASES=SAFE_PGBOUNCER_DATABASES,
         CACHES={'default': {'BACKEND': 'django.core.cache.backends.redis.RedisCache'}},
         AWS_STORAGE_BUCKET_NAME='vote-media',
     )
