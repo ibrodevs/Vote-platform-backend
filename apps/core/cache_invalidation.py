@@ -10,6 +10,7 @@ from apps.core.cache_keys import (
     active_elections_catalog,
     election_public,
     election_results,
+    election_student_detail,
     election_turnout,
     student_principal,
     university,
@@ -48,6 +49,7 @@ def invalidate_election(election_id, university_id=None) -> None:
 
     for key in (
         election_public(election_id),
+        election_student_detail(election_id),
         election_turnout(election_id),
         election_results(election_id),
     ):
