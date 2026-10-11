@@ -42,9 +42,14 @@ class AvailableElectionHotPathTest(ContractTestCase):
             **self._headers(student),
         )
 
+    def _detail(self, student):
+        return self.client.get(
+            f'/api/v1/elections/{self.election.id}/',
+            **self._headers(student),
+        )
+
     def test_shared_catalog_never_leaks_personal_vote_state(self):
         """Один Redis catalog обслуживает университет, но has_voted не общий."""
-        # First request builds the shared university catalog.
         unvoted_response = self._get(self.unvoted)
         self.assertEqual(unvoted_response.status_code, 200)
         unvoted_ids = {str(row['id']) for row in unvoted_response.data}
@@ -52,22 +57,18 @@ class AvailableElectionHotPathTest(ContractTestCase):
         row = next(row for row in unvoted_response.data if str(row['id']) == str(self.election.id))
         self.assertFalse(row['has_voted'])
 
-        # The same cached catalog is now used by a student who already voted.
-        # Their election must be removed by the per-student DB check.
         voted_response = self._get(self.voted)
         self.assertEqual(voted_response.status_code, 200)
         voted_ids = {str(row['id']) for row in voted_response.data}
         self.assertNotIn(str(self.election.id), voted_ids)
 
-        # Re-read unvoted after the voted request to prove the cached object was
-        # not mutated globally by another student's personalization.
         again = self._get(self.unvoted)
         again_ids = {str(row['id']) for row in again.data}
         self.assertIn(str(self.election.id), again_ids)
 
     def test_warm_request_only_needs_personal_vote_lookup(self):
         """After principal+catalog warmup the hot path stays O(1) SQL."""
-        self._get(self.unvoted)  # warm JWT principal + shared catalog
+        self._get(self.unvoted)
 
         with CaptureQueriesContext(connection) as ctx:
             response = self._get(self.unvoted)
@@ -80,7 +81,6 @@ class AvailableElectionHotPathTest(ContractTestCase):
             'warm /elections/available/ should only need the small personal '
             'VoteRecord lookup; SQL:\n  ' + '\n  '.join(statements),
         )
-        # The hot read must not fetch Election/Candidate rows again from DB.
         sql = '\n'.join(statements).lower()
         self.assertNotIn('from "elections_election"', sql)
         self.assertNotIn('from "candidates_candidate"', sql)
@@ -95,3 +95,30 @@ class AvailableElectionHotPathTest(ContractTestCase):
         self.assertIn(str(self.election.id), ids)
         row = next(row for row in response.data if str(row['id']) == str(self.election.id))
         self.assertTrue(row['has_voted'])
+
+    def test_shared_detail_never_leaks_has_voted_between_students(self):
+        first = self._detail(self.unvoted)
+        self.assertEqual(first.status_code, 200)
+        self.assertFalse(first.data['has_voted'])
+        self.assertTrue(first.data['is_eligible'])
+
+        second = self._detail(self.voted)
+        self.assertEqual(second.status_code, 200)
+        self.assertTrue(second.data['has_voted'])
+        self.assertTrue(second.data['is_eligible'])
+
+        again = self._detail(self.unvoted)
+        self.assertFalse(again.data['has_voted'])
+
+    def test_warm_detail_does_not_reload_election_or_candidates(self):
+        self._detail(self.unvoted)
+
+        with CaptureQueriesContext(connection) as ctx:
+            response = self._detail(self.unvoted)
+
+        self.assertEqual(response.status_code, 200)
+        statements = real_sql(ctx.captured_queries)
+        self.assertLessEqual(len(statements), 2)
+        sql = '\n'.join(statements).lower()
+        self.assertNotIn('from "elections_election"', sql)
+        self.assertNotIn('from "candidates_candidate"', sql)
