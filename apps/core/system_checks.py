@@ -1,25 +1,13 @@
 """Проверки production-конфигурации (ТЗ п.102, 103).
 
-ЗАЧЕМ
------
-Небезопасная конфигурация не должна запускаться молча. Забытая переменная
-окружения — это не «чуть менее безопасно», это открытый CORS на боевом
-сервере выборов или голосование, уходящее в SQLite.
-
-Проверки собраны здесь и используются дважды: как Django system checks
-(работают при каждом `manage.py`) и как команда `production_check`
-для CI и pre-deploy.
+Небезопасная конфигурация не должна запускаться молча. Проверки используются
+как Django system checks и командой production_check для CI/pre-deploy.
 """
 import os
 
 from django.conf import settings
 
-# Значение из репозитория. Оно закоммичено, поэтому скомпрометировано
-# по определению — даже если сервер ещё не развёрнут (ТЗ п.33).
 LEAKED_SECRET_KEY = 'vote-platform-secret-key-34e8bb-midnight-011c42'
-
-# HMAC SHA256 работает с ключом любой длины, но PyJWT предупреждает
-# о ключах короче 32 байт: короткий ключ дешевле перебрать (D-10).
 MIN_SECRET_KEY_BYTES = 32
 
 
@@ -175,32 +163,30 @@ def check_redis_configured():
 
 
 def check_conn_max_age():
-    """Пара CONN_MAX_AGE + PgBouncer должна быть заявлена осознанно (этап 11).
+    """Проверяет безопасную пару Django connections + PgBouncer transaction pool.
 
-    Django не может определить, стоит ли перед ним пулер: PgBouncer выглядит
-    для него обычным сервером PostgreSQL. Поэтому ошибиться здесь легко, а
-    цена ошибки измерена на профиле записи голосов, одна и та же нагрузка:
+    Persistent client connection Django -> PgBouncer не закрепляет PostgreSQL
+    backend за воркером: transaction pooling всё равно возвращает server
+    connection в пул после COMMIT. Опасны server-side cursors, потому что
+    именованный cursor живёт внутри конкретной PostgreSQL session и следующий
+    fetch может попасть уже в другую session.
 
-        CONN_MAX_AGE=0, без PgBouncer  → p95 364 мс, 847 запросов не уложились
-        CONN_MAX_AGE=60               → p95  13 мс,  18 запросов не уложились
-
-    Причина в том, что при CONN_MAX_AGE=0 Django закрывает соединение после
-    каждого запроса, и на каждый следующий PostgreSQL заново порождает
-    backend-процесс. Полезной работы в этом нет.
-
-    Обратная ошибка так же реальна: persistent-соединения Django за
-    PgBouncer в transaction pooling ломают пулинг — соединение закрепляется
-    за воркером, и пулер перестаёт делать то, ради чего поставлен.
+    Поэтому за transaction PgBouncer допускается DB_CONN_MAX_AGE > 0 только
+    при DISABLE_SERVER_SIDE_CURSORS=True. На web hot path это убирает лишние
+    Django->PgBouncer handshakes, не ослабляя transaction pooling.
     """
     conn_max_age = getattr(settings, 'DB_CONN_MAX_AGE', 0)
     behind_pgbouncer = getattr(settings, 'DB_BEHIND_PGBOUNCER', False)
+    disable_cursors = settings.DATABASES.get('default', {}).get(
+        'DISABLE_SERVER_SIDE_CURSORS', False
+    )
 
-    if behind_pgbouncer and conn_max_age != 0:
+    if behind_pgbouncer and not disable_cursors:
         return _fail(
-            'conn_max_age_with_pgbouncer',
-            f'DB_BEHIND_PGBOUNCER=True вместе с DB_CONN_MAX_AGE={conn_max_age}',
-            'За PgBouncer в transaction pooling соединения Django обязаны быть '
-            'короткоживущими. Установите DB_CONN_MAX_AGE=0.',
+            'server_side_cursors_with_pgbouncer',
+            'PgBouncer transaction pooling заявлен, но server-side cursors включены',
+            'Установите DB_DISABLE_SERVER_SIDE_CURSORS=True. Именованный cursor '
+            'нельзя безопасно продолжить на другой PostgreSQL session.',
         )
 
     if not behind_pgbouncer and conn_max_age == 0:
@@ -208,27 +194,21 @@ def check_conn_max_age():
             'conn_max_age_zero_without_pooler',
             'DB_CONN_MAX_AGE=0 и PgBouncer не заявлен: новое соединение с '
             'PostgreSQL на каждый запрос',
-            'Выберите одну схему. Либо DB_CONN_MAX_AGE=60 (или другое ненулевое '
-            'значение), если приложение ходит в PostgreSQL напрямую. Либо '
-            'DB_BEHIND_PGBOUNCER=True, если перед базой стоит пулер. '
-            'Измерено на профиле записи: неверная пара дала p95 364 мс '
-            'против 13 мс на той же нагрузке.',
+            'Для прямого подключения задайте DB_CONN_MAX_AGE=60 (или другое '
+            'измеренное ненулевое значение), либо явно используйте PgBouncer.',
         )
 
     if behind_pgbouncer:
-        return _pass('conn_max_age', 'PgBouncer заявлен, CONN_MAX_AGE=0 — верно')
+        return _pass(
+            'conn_max_age',
+            f'PgBouncer transaction pool: CONN_MAX_AGE={conn_max_age}, '
+            'server-side cursors отключены',
+        )
     return _pass('conn_max_age', f'Прямое подключение, CONN_MAX_AGE={conn_max_age}')
 
 
 def check_shared_cache():
-    """Кэш обязан быть общим для всех реплик приложения (ТЗ п.99).
-
-    LocMemCache живёт внутри процесса. С несколькими репликами это означает
-    не «медленнее», а «по-разному»: у каждой ноды свой кэш личности и свои
-    счётчики ограничения частоты. Студент, заблокированный на одной ноде,
-    свободно работает через другую, а отозванный токен продолжает
-    действовать там, где инвалидация не дошла.
-    """
+    """Кэш обязан быть общим для всех реплик приложения (ТЗ п.99)."""
     backend = settings.CACHES.get('default', {}).get('BACKEND', '')
     if 'locmem' in backend.lower():
         return _fail(
@@ -247,15 +227,7 @@ def check_shared_cache():
 
 
 def check_media_storage():
-    """Медиафайлы не должны лежать на диске одной ноды (ТЗ п.99).
-
-    Загрузка, попавшая на первую реплику, не существует для второй:
-    пользователь увидит картинку через раз, в зависимости от того, куда
-    его направил балансировщик.
-
-    Общий сетевой диск — допустимое решение, но Django отличить его от
-    локального не может, поэтому такую схему нужно заявить явно.
-    """
+    """Медиафайлы не должны лежать на диске одной ноды (ТЗ п.99)."""
     if getattr(settings, 'AWS_STORAGE_BUCKET_NAME', ''):
         return _pass('media_storage', 'Медиа в объектном хранилище')
     if os.getenv('DJANGO_MEDIA_SHARED', 'False').strip().lower() == 'true':
