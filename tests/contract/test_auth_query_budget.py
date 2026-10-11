@@ -51,17 +51,19 @@ class VoteQueryBudgetTest(ContractTestCase):
             **self.headers,
         )
 
-    def test_cast_vote_costs_four_statements(self):
-        """SELECT выборов, EXISTS кандидата, INSERT VoteRecord, INSERT Ballot.
+    def test_cast_vote_costs_three_statements(self):
+        """Candidate+Election SELECT, INSERT VoteRecord, INSERT Ballot.
 
-        Ноль запросов на аутентификацию — личность берётся из кэша.
+        Ноль запросов на аутентификацию — личность берётся из кэша. Candidate
+        и Election загружаются одним JOIN, поэтому успешный hot path теперь
+        содержит три содержательных SQL-запроса вместо четырёх.
         """
         with CaptureQueriesContext(connection) as ctx:
             res = self._cast()
         self.assertEqual(res.status_code, 200)
 
         statements = real_sql(ctx.captured_queries)
-        self.assertEqual(len(statements), 4, "\n".join(statements))
+        self.assertEqual(len(statements), 3, "\n".join(statements))
         self.assertEqual(sum("students_student" in s for s in statements), 0,
                          "аутентификация не должна обращаться к таблице студентов")
 
@@ -75,7 +77,7 @@ class VoteQueryBudgetTest(ContractTestCase):
         with CaptureQueriesContext(connection) as ctx:
             res = self._cast()
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(len(real_sql(ctx.captured_queries)), 4)
+        self.assertEqual(len(real_sql(ctx.captured_queries)), 3)
 
     def test_vote_status_query_count(self):
         with self.assertNumQueries(1):
