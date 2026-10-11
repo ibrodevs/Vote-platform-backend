@@ -29,6 +29,15 @@ DO NOT log student_id and candidate_id together, anywhere, ever
 Здесь сразу выполняется INSERT, а защиту даёт UNIQUE-констрейнт базы — он
 в гонке не проигрывает никогда (ТЗ п.6). Заодно это на один SQL-запрос меньше
 на каждом голосе.
+
+ПОЧЕМУ КАНДИДАТ И ВЫБОРЫ ЧИТАЮТСЯ ОДНИМ SELECT
+---------------------------------------------
+На успешном голосе раньше сначала читалась Election, затем отдельным SELECT
+проверялся Candidate. На пике выборов это два сетевых round trip к PostgreSQL
+до начала записи. Теперь Candidate загружается вместе с Election через
+select_related(). Успешный hot path получает обе сущности одним SELECT.
+Дополнительная проверка Election выполняется только на ошибочном запросе с
+неверным candidate_id, чтобы сохранить прежний API-код election_not_found.
 """
 import logging
 from datetime import datetime
@@ -59,6 +68,7 @@ class VoterIdentity(Protocol):
 
     id: object
     university_id: object
+
 
 logger = logging.getLogger('apps.voting')
 
@@ -119,6 +129,26 @@ class InvalidCandidateError(VotingError):
         super().__init__("Указанный кандидат не участвует в данных выборах", code="invalid_candidate")
 
 
+def _candidate_with_election(election_id: str, candidate_id: str):
+    """Один SELECT для кандидата и выборов на успешном vote hot path.
+
+    Если кандидат не найден, второй запрос выполняется только на ошибочном
+    пути, чтобы отличить несуществующие выборы от неверного кандидата и не
+    менять внешний API-контракт.
+    """
+    candidate = (
+        Candidate.objects.select_related('election')
+        .filter(id=candidate_id, election_id=election_id)
+        .first()
+    )
+    if candidate is not None:
+        return candidate
+
+    if not Election.objects.filter(id=election_id).exists():
+        raise VotingError("Выборы не найдены", code="election_not_found")
+    raise InvalidCandidateError()
+
+
 def cast_secret_ballot(
     student: VoterIdentity, election_id: str, candidate_id: str
 ) -> bool:
@@ -143,10 +173,8 @@ def cast_secret_ballot(
         # не ждут. Ждёт только тот, кто меняет состояние выборов (ТЗ п.8).
         election_vote_lock(election_id)
 
-        try:
-            election = Election.objects.get(id=election_id)
-        except Election.DoesNotExist:
-            raise VotingError("Выборы не найдены", code="election_not_found")
+        candidate = _candidate_with_election(election_id, candidate_id)
+        election = candidate.election
 
         if election.status != Election.Status.ACTIVE:
             raise ElectionNotActiveError()
@@ -161,9 +189,6 @@ def cast_secret_ballot(
         # сравнение было бы всегда ложным, и ни один голос не проходил бы.
         if str(election.university_id) != str(student.university_id):
             raise IneligibleStudentError()
-
-        if not Candidate.objects.filter(id=candidate_id, election_id=election.id).exists():
-            raise InvalidCandidateError()
 
         # Savepoint обязателен. Без него IntegrityError оставляет транзакцию
         # PostgreSQL в broken state, и следующий же SQL внутри неё падает
@@ -180,7 +205,7 @@ def cast_secret_ballot(
                 raise AlreadyVotedError()
             raise
 
-        Ballot.objects.create(election_id=election.id, candidate_id=candidate_id)
+        Ballot.objects.create(election_id=election.id, candidate_id=candidate.id)
 
         # Положительный факт участия ставится в кэш ТОЛЬКО после COMMIT.
         # Поставить его раньше значило бы показать студенту «вы проголосовали»
@@ -201,9 +226,11 @@ def cast_secret_ballot(
             )
         )
 
-    # Логируется ПОСЛЕ коммита и без пары student+candidate: связка этих двух
-    # идентификаторов в логах восстанавливает выбор студента (ТЗ п.4).
-    logger.info("vote_accepted election_id=%s", election_id)
+    # На пике выборов INFO на каждый успешный голос превращается в тысячи
+    # синхронных операций форматирования/вывода в секунду. Для аудита есть
+    # агрегированные метрики и сама БД; подробная строка остаётся только в DEBUG.
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("vote_accepted election_id=%s", election_id)
 
     return True
 
