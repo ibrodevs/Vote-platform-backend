@@ -139,10 +139,11 @@ class VoteLoggingPrivacyTest(ContractTestCase):
         self.election = make_election(self.uni)
         self.candidate = make_candidate(self.election)
 
-    def test_successful_vote_logs_no_student_or_candidate(self):
+    def test_successful_vote_debug_log_has_no_student_or_candidate(self):
+        """Диагностический vote log остаётся безопасным, но не шумит на INFO."""
         from apps.voting.services import cast_secret_ballot
 
-        with self.assertLogs("apps.voting", level="INFO") as captured:
+        with self.assertLogs("apps.voting", level="DEBUG") as captured:
             cast_secret_ballot(self.student, str(self.election.id), str(self.candidate.id))
 
         blob = "\n".join(captured.output)
