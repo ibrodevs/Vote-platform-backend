@@ -3,7 +3,13 @@
 Запуск за 5–10 минут до пика убирает «холодный старт», когда первый
 authenticated-запрос каждого из сотен тысяч студентов иначе делает SELECT
 из PostgreSQL. Команда не кэширует пароли, email, телефон или выбор студента.
+
+TTL пакетов намеренно получает jitter. Если 300k ключей положить с одним
+точным TTL, они почти одновременно истекут позже и создадут второй thundering
+herd уже во время голосования.
 """
+import random
+
 from django.conf import settings
 from django.core.cache import cache
 from django.core.management.base import BaseCommand, CommandError
@@ -27,7 +33,13 @@ class Command(BaseCommand):
             '--ttl',
             type=int,
             default=None,
-            help='TTL секунд; по умолчанию AUTH_PRINCIPAL_CACHE_TTL',
+            help='Базовый TTL секунд; по умолчанию AUTH_PRINCIPAL_CACHE_TTL',
+        )
+        parser.add_argument(
+            '--jitter',
+            type=int,
+            default=None,
+            help='Разброс TTL +/- секунд; default=min(TTL/3, 600)',
         )
         parser.add_argument(
             '--university-id',
@@ -39,12 +51,19 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         batch_size = options['batch_size']
         ttl = options['ttl'] or settings.AUTH_PRINCIPAL_CACHE_TTL
+        jitter = options['jitter']
+        if jitter is None:
+            jitter = min(ttl // 3, 600)
         university_id = options['university_id']
 
         if batch_size < 100 or batch_size > 10000:
             raise CommandError('--batch-size должен быть от 100 до 10000')
         if ttl < 60:
             raise CommandError('--ttl должен быть не меньше 60 секунд')
+        if jitter < 0 or jitter >= ttl:
+            raise CommandError('--jitter должен быть >= 0 и меньше TTL')
+        if ttl - jitter < 60:
+            raise CommandError('минимальный TTL после jitter должен быть не меньше 60 секунд')
 
         qs = Student.objects.filter(is_active=True)
         if university_id:
@@ -56,7 +75,8 @@ class Command(BaseCommand):
 
         total = qs.count()
         self.stdout.write(
-            f'Прогрев principal cache: students={total}, batch={batch_size}, ttl={ttl}s'
+            'Прогрев principal cache: '
+            f'students={total}, batch={batch_size}, ttl={ttl}s, jitter=+/-{jitter}s'
         )
 
         written = 0
@@ -67,10 +87,12 @@ class Command(BaseCommand):
             nonlocal written, failed, payload
             if not payload:
                 return
-            result = cache.set_many(payload, timeout=ttl)
-            # django-redis возвращает список не записанных ключей; другие backend
-            # могут вернуть None. В обоих случаях отсутствие exception означает,
-            # что пакет принят backend-ом.
+            effective_ttl = ttl
+            if jitter:
+                effective_ttl += random.randint(-jitter, jitter)
+            result = cache.set_many(payload, timeout=effective_ttl)
+            # Django RedisCache возвращает число/None в зависимости от backend;
+            # django-redis может вернуть список failed keys. Поддерживаем оба.
             failed_keys = result if isinstance(result, (list, tuple, set)) else ()
             failed += len(failed_keys)
             written += len(payload) - len(failed_keys)
