@@ -1,8 +1,7 @@
 """Тесты конфигурации БД (ТЗ п.12, 102).
 
-Проверяют, что production физически не может стартовать на SQLite или MySQL,
-и что поведение по умолчанию (без новых переменных) не изменилось —
-иначе сломается уже работающий деплой.
+Проверяют production PostgreSQL и безопасную комбинацию persistent Django
+connections + PgBouncer transaction pooling.
 """
 import importlib
 import os
@@ -14,11 +13,9 @@ from django.core.exceptions import ImproperlyConfigured
 DB_ENV_KEYS = (
     "DJANGO_ENV", "DB_ENGINE", "DB_NAME", "DB_USER",
     "DB_PASSWORD", "DB_HOST", "DB_PORT", "DB_CONN_MAX_AGE",
+    "DB_BEHIND_PGBOUNCER", "DB_DISABLE_SERVER_SIDE_CURSORS",
 )
 
-# С этапа 7 production требует ещё и эти переменные, иначе старт валится
-# раньше, чем дело дойдёт до проверки движка базы. Здесь задаются заведомо
-# корректные значения, чтобы каждый тест проверял ровно то, что заявляет.
 PRODUCTION_PREREQS = {
     "DJANGO_SECRET_KEY": "x" * 64,
     "DJANGO_ALLOWED_HOSTS": "api.example.kg",
@@ -28,12 +25,6 @@ PRODUCTION_PREREQS = {
 
 
 class DatabaseConfigTest(unittest.TestCase):
-    """Каждый кейс перезагружает config.settings с нужным окружением.
-
-    Настройки, уже загруженные для текущего прогона, восстанавливаются
-    в tearDown — иначе повторный импорт оставит после себя чужую конфигурацию.
-    """
-
     def _reload_with(self, **env):
         cleared = {k: None for k in DB_ENV_KEYS}
         cleared.update(PRODUCTION_PREREQS)
@@ -47,7 +38,6 @@ class DatabaseConfigTest(unittest.TestCase):
             return importlib.reload(settings_module)
 
     def tearDown(self):
-        # Перезагрузка без DJANGO_ENV возвращает настройки к режиму разработки
         for key in DB_ENV_KEYS:
             os.environ.pop(key, None)
         import config.settings as settings_module
@@ -72,7 +62,6 @@ class DatabaseConfigTest(unittest.TestCase):
         self.assertEqual(s.DATABASES["default"]["ENGINE"], "django.db.backends.postgresql")
 
     def test_development_defaults_to_sqlite(self):
-        """Поведение по умолчанию не изменилось — живой деплой не ломается."""
         s = self._reload_with()
         self.assertFalse(s.IS_PRODUCTION)
         self.assertEqual(s.DJANGO_ENV, "development")
@@ -83,13 +72,35 @@ class DatabaseConfigTest(unittest.TestCase):
         self.assertEqual(s.DATABASES["default"]["ENGINE"], "django.db.backends.mysql")
 
     def test_conn_max_age_defaults_to_zero(self):
-        """0 выбран осознанно: persistent-соединения вредны за PgBouncer (ТЗ п.13)."""
         s = self._reload_with(DB_ENGINE="postgresql")
         self.assertEqual(s.DATABASES["default"]["CONN_MAX_AGE"], 0)
 
     def test_conn_max_age_from_env(self):
         s = self._reload_with(DB_ENGINE="postgresql", DB_CONN_MAX_AGE="60")
         self.assertEqual(s.DATABASES["default"]["CONN_MAX_AGE"], 60)
+
+    def test_pgbouncer_disables_server_side_cursors_by_default(self):
+        s = self._reload_with(
+            DB_ENGINE="postgresql",
+            DB_BEHIND_PGBOUNCER="True",
+            DB_CONN_MAX_AGE="60",
+        )
+        self.assertTrue(s.DATABASES["default"]["DISABLE_SERVER_SIDE_CURSORS"])
+
+    def test_direct_postgres_keeps_server_side_cursors_by_default(self):
+        s = self._reload_with(
+            DB_ENGINE="postgresql",
+            DB_BEHIND_PGBOUNCER="False",
+        )
+        self.assertFalse(s.DATABASES["default"]["DISABLE_SERVER_SIDE_CURSORS"])
+
+    def test_cursor_setting_can_be_explicitly_overridden(self):
+        s = self._reload_with(
+            DB_ENGINE="postgresql",
+            DB_BEHIND_PGBOUNCER="True",
+            DB_DISABLE_SERVER_SIDE_CURSORS="False",
+        )
+        self.assertFalse(s.DATABASES["default"]["DISABLE_SERVER_SIDE_CURSORS"])
 
     def test_postgres_connection_params_from_env(self):
         s = self._reload_with(

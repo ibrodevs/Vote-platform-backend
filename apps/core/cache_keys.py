@@ -1,12 +1,7 @@
 """Ключи кэша (ТЗ п.23).
 
-Единственное место в проекте, где формируются имена ключей. Разрозненные
-ad-hoc строки по коду приводят к тому, что инвалидация промахивается мимо
-записи, которую собиралась удалить.
-
-Неймспейс версионирован: при несовместимом изменении формата значений
-достаточно поднять версию, и старые записи перестают читаться, а не
-интерпретируются неверно.
+Единственное место в проекте, где формируются имена ключей. Неймспейс
+версионирован: при несовместимом изменении формата достаточно поднять версию.
 """
 import uuid as uuid_module
 
@@ -14,11 +9,7 @@ NAMESPACE = "voteplatform:v1"
 
 
 def _normalize(value) -> str:
-    """UUID и его строковое представление обязаны давать один ключ.
-
-    Иначе запись, сделанная по объекту UUID, не находилась бы по строке
-    из JWT, и кэш молча не работал бы.
-    """
+    """UUID и его строковое представление обязаны давать один ключ."""
     if isinstance(value, uuid_module.UUID):
         return str(value)
     try:
@@ -33,11 +24,7 @@ def student_principal(student_id) -> str:
 
 
 def student_vote_status(student_id, election_id) -> str:
-    """Факт участия студента в выборах.
-
-    Заготовка для этапа 6. Ключ НЕ содержит кандидата: он и не должен —
-    иначе кэш восстанавливал бы выбор студента (ТЗ п.4).
-    """
+    """Положительный факт участия; ключ принципиально не содержит кандидата."""
     return (
         f"{NAMESPACE}:student:{_normalize(student_id)}"
         f":vote:{_normalize(election_id)}"
@@ -49,18 +36,28 @@ def election_public(election_id) -> str:
     return f"{NAMESPACE}:election:{_normalize(election_id)}:public"
 
 
+def election_student_detail(election_id) -> str:
+    """Общая НЕперсональная часть student detail endpoint."""
+    return f"{NAMESPACE}:election:{_normalize(election_id)}:student-detail"
+
+
 def university(university_id) -> str:
     """Данные университета."""
     return f"{NAMESPACE}:university:{_normalize(university_id)}"
 
 
-def election_turnout(election_id) -> str:
-    """Явка идущих выборов.
+def active_elections_catalog(university_id) -> str:
+    """Общая для всех студентов сериализованная часть активных выборов.
 
-    Ключ отдельный от результатов намеренно (ТЗ п.51): явка показывается
-    всегда, а результаты — только после завершения. Общий ключ сделал бы
-    кэш явки каналом утечки результатов.
+    Персональный `has_voted` сюда никогда не попадает. Это позволяет тысячам
+    студентов одного университета не сериализовать один и тот же список
+    кандидатов и не читать те же Election/Candidate строки из PostgreSQL.
     """
+    return f"{NAMESPACE}:university:{_normalize(university_id)}:active-elections"
+
+
+def election_turnout(election_id) -> str:
+    """Явка идущих выборов."""
     return f"{NAMESPACE}:election:{_normalize(election_id)}:turnout"
 
 

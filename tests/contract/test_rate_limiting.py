@@ -50,9 +50,52 @@ class ThrottleKeyTest(ContractTestCase):
         self.assertEqual(key_a, key_b, "ключ не должен зависеть от IP")
         self.assertIn(str(student.id), key_a)
 
-    def test_auth_throttle_keys_by_ip(self):
-        """До аутентификации студента ещё нет — остаётся только IP."""
-        self.assertIn("ident", AuthAttemptThrottle.cache_format)
+    def test_auth_throttle_keys_by_account_not_shared_nat(self):
+        """Разные студенты за одним NAT получают разные pre-auth счётчики."""
+
+        class FakeRequest:
+            META = {"REMOTE_ADDR": "203.0.113.10"}
+
+            def __init__(self, email):
+                self.data = {"email": email, "password": "не читается"}
+
+        throttle = AuthAttemptThrottle()
+        key_a = throttle.get_cache_key(FakeRequest("a@uni.kg"), None)
+        key_b = throttle.get_cache_key(FakeRequest("b@uni.kg"), None)
+        self.assertNotEqual(key_a, key_b)
+        self.assertNotIn("a@uni.kg", key_a)
+        self.assertNotIn("b@uni.kg", key_b)
+
+    def test_auth_throttle_same_account_is_same_across_ips(self):
+        """Смена IP не должна обходить лимит перебора одного аккаунта."""
+
+        class FakeRequest:
+            data = {"email": "victim@uni.kg", "password": "x"}
+
+            def __init__(self, ip):
+                self.META = {"REMOTE_ADDR": ip}
+
+        throttle = AuthAttemptThrottle()
+        key_a = throttle.get_cache_key(FakeRequest("203.0.113.1"), None)
+        key_b = throttle.get_cache_key(FakeRequest("198.51.100.2"), None)
+        self.assertEqual(key_a, key_b)
+
+    def test_otp_verify_keys_by_request_id(self):
+        class FakeRequest:
+            META = {"REMOTE_ADDR": "203.0.113.10"}
+
+            def __init__(self, request_id):
+                self.data = {"request_id": request_id, "code": "123456"}
+
+        throttle = OtpVerifyThrottle()
+        key_a = throttle.get_cache_key(
+            FakeRequest("11111111-1111-1111-1111-111111111111"), None
+        )
+        key_b = throttle.get_cache_key(
+            FakeRequest("22222222-2222-2222-2222-222222222222"), None
+        )
+        self.assertNotEqual(key_a, key_b)
+        self.assertNotIn("11111111", key_a)
 
     def test_all_scopes_have_configured_rates(self):
         from django.conf import settings
@@ -126,7 +169,7 @@ class AuthThrottleTest(ContractTestCase):
         make_university(code="kstu")
 
     def test_repeated_login_attempts_are_throttled(self):
-        """Перебор пароля с одного адреса останавливается."""
+        """Перебор одного аккаунта останавливается независимо от NAT."""
         statuses = []
         for _ in range(30):
             res = self.client.post(
@@ -136,6 +179,18 @@ class AuthThrottleTest(ContractTestCase):
             )
             statuses.append(res.status_code)
         self.assertIn(429, statuses)
+
+    def test_many_accounts_on_same_nat_do_not_share_auth_bucket(self):
+        """Массовый вход в 12:00 не блокирует весь университет одним IP."""
+        statuses = []
+        for i in range(25):
+            res = self.client.post(
+                "/api/v1/auth/student/login/",
+                {"email": f"student-{i}@kstu.kg", "password": "попытка"},
+                format="json", REMOTE_ADDR="198.51.100.77",
+            )
+            statuses.append(res.status_code)
+        self.assertNotIn(429, statuses)
 
     def test_admin_login_is_throttled(self):
         statuses = []

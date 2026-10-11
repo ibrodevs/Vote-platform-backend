@@ -138,20 +138,17 @@ if IS_PRODUCTION and DB_ENGINE != 'postgresql':
         "SQLite и MySQL не поддерживаются в production (ТЗ п.12)."
     )
 
-# CONN_MAX_AGE=0 по умолчанию осознанно: за PgBouncer в transaction pooling
-# persistent-соединения Django вредны. Значение настраивается на этапе 7.
-#
-# Этап 11 измерил, чего стоит ошибиться с этой парой настроек. Без PgBouncer
-# и с CONN_MAX_AGE=0 каждый HTTP-запрос открывает новое соединение с
-# PostgreSQL: профиль записи голосов дал p95 364 мс против 13 мс при
-# CONN_MAX_AGE=60 на той же нагрузке. Поэтому развёртывание обязано явно
-# заявить одну из двух схем — см. check_conn_max_age в apps/core/system_checks.py.
+# Persistent Django -> PgBouncer connections допустимы и полезны: PgBouncer
+# держит короткие серверные транзакции, а Django не платит handshake на каждый
+# HTTP-запрос. Критическое условие transaction pooling — отключённые server-side
+# cursors: именованный cursor нельзя переносить между разными PostgreSQL backend
+# connections, которые PgBouncer выдаёт от транзакции к транзакции.
 DB_CONN_MAX_AGE = int(os.getenv('DB_CONN_MAX_AGE', '0'))
-
-# Явное заявление о том, что перед PostgreSQL стоит PgBouncer в режиме
-# transaction pooling. Определить автоматически нельзя: для Django пулер
-# выглядит обычным сервером PostgreSQL.
 DB_BEHIND_PGBOUNCER = os.getenv('DB_BEHIND_PGBOUNCER', 'False').strip().lower() == 'true'
+DB_DISABLE_SERVER_SIDE_CURSORS = os.getenv(
+    'DB_DISABLE_SERVER_SIDE_CURSORS',
+    'True' if DB_BEHIND_PGBOUNCER else 'False',
+).strip().lower() == 'true'
 DB_CONNECT_TIMEOUT = int(os.getenv('DB_CONNECT_TIMEOUT', '10'))
 
 # Роутер не выбирает базу для чтения — он запрещает записи и миграции
@@ -168,6 +165,8 @@ if DB_ENGINE == 'postgresql':
             'HOST': os.getenv('DB_HOST', '127.0.0.1'),
             'PORT': os.getenv('DB_PORT', '5432'),
             'CONN_MAX_AGE': DB_CONN_MAX_AGE,
+            'CONN_HEALTH_CHECKS': True,
+            'DISABLE_SERVER_SIDE_CURSORS': DB_DISABLE_SERVER_SIDE_CURSORS,
             'OPTIONS': {
                 # Не позволять одному зависшему соединению занять воркер (ТЗ п.95)
                 'connect_timeout': DB_CONNECT_TIMEOUT,
@@ -363,9 +362,9 @@ RATE_LIMIT_ENABLED = (
     not TESTING and os.getenv('RATE_LIMIT_ENABLED', 'True').lower() == 'true'
 )
 
-# Пороги. Ключ для student_action и vote — идентификатор студента,
-# для auth_attempt и otp_verify — IP. Разница принципиальна: лимит по IP
-# на голосовании заблокировал бы весь университет за одним NAT.
+# Пороги. Ключ для student_action и vote — идентификатор студента.
+# До аутентификации ключ — хэш стабильного account/session identifier
+# (request_id/email/student_id/phone), IP используется только как fallback.
 RATE_LIMITS = {
     'auth_attempt': os.getenv('RATE_LIMIT_AUTH', '20/min'),
     'otp_verify': os.getenv('RATE_LIMIT_OTP_VERIFY', '10/min'),
@@ -582,4 +581,3 @@ MOCK_SMS = os.getenv('MOCK_SMS', 'False' if IS_PRODUCTION else 'True').lower() =
 SMS_OTP_EXPIRY_MINUTES = 10
 SMS_MAX_ATTEMPTS = 5
 DEMO_OTP_CODE = '123456'
-

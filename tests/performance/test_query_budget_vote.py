@@ -34,29 +34,23 @@ SKIP_REASON = (
 class VoteQueryBudgetTest(TransactionTestCase):
     """Сколько раз голосование обращается к базе."""
 
-    # Измерено, а не выбрано. Состав успешного голосования —
+    # Состав успешного голосования после election-day оптимизации:
     # каждая строка один round trip до сервера PostgreSQL:
     #
     #   1. BEGIN
-    #   2. SELECT pg_advisory_xact_lock_shared(...)   — SHARED-лок выборов (ТЗ п.8)
-    #   3. SELECT ... FROM elections WHERE id = ...   — статус, окно, университет
-    #   4. SELECT 1 FROM candidates WHERE ... LIMIT 1 — кандидат принадлежит выборам
-    #   5. SAVEPOINT                                  — обязателен: без него
-    #                                                   IntegrityError ломает
-    #                                                   транзакцию (ТЗ п.10)
-    #   6. INSERT INTO voting_voterecord ...          — факт участия
-    #   7. RELEASE SAVEPOINT
-    #   8. INSERT INTO voting_ballot ...              — сам бюллетень
-    #   9. COMMIT
+    #   2. SELECT pg_advisory_xact_lock_shared(...) — SHARED-лок выборов
+    #   3. SELECT candidate JOIN election           — кандидат + состояние
+    #                                                  выборов одним запросом
+    #   4. SAVEPOINT                                — нужен для IntegrityError
+    #   5. INSERT INTO voting_voterecord ...        — факт участия
+    #   6. RELEASE SAVEPOINT
+    #   7. INSERT INTO voting_ballot ...            — сам бюллетень
+    #   8. COMMIT
     #
-    # Отказ дубликату стоит столько же: шаги 1–5 те же, дальше падающий
-    # INSERT, ROLLBACK TO SAVEPOINT, RELEASE SAVEPOINT, ROLLBACK.
-    #
-    # На этой машине приложение и база общаются через loopback, и девять
-    # обращений почти бесплатны. На боевом сервере между ними сеть: при
-    # RTT 0.5 мс это 4.5 мс чистого ожидания на каждый голос, до всякой
-    # полезной работы. Поэтому число само по себе — предмет этапа 11.
-    EXPECTED_QUERIES = 9
+    # Раньше Election и Candidate читались двумя отдельными SELECT и бюджет
+    # был 9. Для 1000+ vote/s один убранный round trip означает тысячи
+    # сетевых обращений к PostgreSQL в секунду, не меняя гарантий голосования.
+    EXPECTED_QUERIES = 8
 
     def setUp(self):
         super().setUp()
@@ -79,7 +73,6 @@ class VoteQueryBudgetTest(TransactionTestCase):
             "Это не обязательно ошибка, но обязательно требует обоснования.\n"
             "Фактические запросы:\n  " + "\n  ".join(statements),
         )
-        # Голос действительно записан, а не просто «уложился в бюджет».
         self.assertEqual(VoteRecord.objects.filter(election=self.election).count(), 1)
         self.assertEqual(Ballot.objects.filter(election=self.election).count(), 1)
 
@@ -99,6 +92,5 @@ class VoteQueryBudgetTest(TransactionTestCase):
             "дешёвый способ нагружать базу повторными запросами.\n"
             "Фактические запросы:\n  " + "\n  ".join(statements),
         )
-        # Дубликат не добавил ни голоса, ни бюллетеня (ТЗ п.6, 10).
         self.assertEqual(VoteRecord.objects.filter(election=self.election).count(), 1)
         self.assertEqual(Ballot.objects.filter(election=self.election).count(), 1)

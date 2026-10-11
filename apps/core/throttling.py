@@ -10,17 +10,23 @@
 Поэтому ключ выбирается по смыслу endpoint'а:
   * есть аутентифицированный студент -> ключ по студенту (голосование,
     статус, профиль). IP не участвует вовсе;
-  * студента ещё нет -> ключ по IP, но только для операций, которые
-    и должны быть редкими: вход, регистрация, запрос и проверка кода.
+  * до аутентификации -> ключ по стабильному идентификатору попытки
+    (request_id, email или student_id), а IP используется только как fallback.
 
-Волюметрические атаки останавливаются раньше — на Nginx и WAF
-(deploy/nginx.conf). Здесь защита от перебора, а не от флуда.
+Это важно в 12:00: тысячи студентов одного университета могут логиниться
+через один NAT и не должны делить один счётчик. При этом перебор одного
+аккаунта с разных IP всё равно попадает в один и тот же лимит.
+
+Волюметрические атаки останавливаются раньше — на Nginx/WAF. Здесь защита
+от перебора конкретной учётной записи, а не от сетевого флуда.
 
 ОТКЛЮЧЕНИЕ ДЛЯ НАГРУЗОЧНОГО ТЕСТИРОВАНИЯ
 ----------------------------------------
 `RATE_LIMIT_ENABLED=False` снимает все лимиты. Без этого бенчмарк этапа 10
 измерял бы работу троттлера, а не приложения.
 """
+import hashlib
+
 from django.conf import settings
 from rest_framework.throttling import SimpleRateThrottle
 
@@ -50,7 +56,7 @@ class StudentActionThrottle(_ConfigurableThrottle):
     def get_cache_key(self, request, view):
         student_id = getattr(request.user, 'id', None)
         if not getattr(request.user, 'is_student', False) or not student_id:
-            return None  # не студент — этот троттл не применяется
+            return None
         return self.cache_format % {'scope': self.scope, 'ident': student_id}
 
 
@@ -65,26 +71,61 @@ class VoteThrottle(StudentActionThrottle):
 
 
 class AuthAttemptThrottle(_ConfigurableThrottle):
-    """Ключ — IP. Только для операций до аутентификации.
+    """До аутентификации ограничивает конкретную учётную запись, не NAT.
 
-    Здесь IP оправдан: вход, регистрация и запрос кода в норме редки даже
-    для целого университета, а перебор пароля идёт именно с одного адреса.
+    В ключ никогда не попадает исходный email/телефон/student_id: значение
+    хэшируется перед записью в общий Redis. Пароль и OTP-код не читаются.
+    Если endpoint не передал подходящего идентификатора, остаётся IP fallback.
     """
 
     scope = 'auth_attempt'
 
+    @staticmethod
+    def _stable_ident(request):
+        try:
+            data = request.data or {}
+        except Exception:
+            data = {}
+
+        request_id = str(data.get('request_id') or '').strip().lower()
+        if request_id:
+            return f'request:{request_id}'
+
+        email = str(data.get('email') or '').strip().lower()
+        if email:
+            return f'email:{email}'
+
+        student_id = str(data.get('student_id') or '').strip().lower()
+        university_code = str(data.get('university_code') or '').strip().lower()
+        if student_id:
+            return f'student:{university_code}:{student_id}'
+
+        phone = str(data.get('phone_number') or '').strip()
+        if phone:
+            return f'phone:{phone}'
+
+        return ''
+
     def get_cache_key(self, request, view):
+        ident = self._stable_ident(request)
+        if ident:
+            # Короткий непрозрачный ключ: Redis не хранит PII из формы входа.
+            ident = hashlib.sha256(ident.encode('utf-8')).hexdigest()[:32]
+        else:
+            ident = f'ip:{self.get_ident(request)}'
+
         return self.cache_format % {
             'scope': self.scope,
-            'ident': self.get_ident(request),
+            'ident': ident,
         }
 
 
 class OtpVerifyThrottle(AuthAttemptThrottle):
     """Проверка кода — самый привлекательный для перебора endpoint.
 
-    Счётчик попыток в самой сессии ограничивает перебор ОДНОГО кода;
-    этот лимит ограничивает перебор по многим сессиям сразу.
+    Для verify ключом становится request_id сессии. Счётчик попыток в самой
+    сессии ограничивает один код, этот throttle ограничивает частоту запросов
+    к этой же сессии независимо от общего университетского NAT.
     """
 
     scope = 'otp_verify'

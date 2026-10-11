@@ -2,10 +2,9 @@
 # Production Docker Compose Configuration for Hetzner CCX33
 # (8 dedicated vCPU, 32 GB RAM, 240 GB NVMe, Ubuntu 24.04 LTS)
 # ==============================================================================
-# Запуск:
-#   cp .env.example .env
-#   # заполнить секреты в .env
-#   ./scripts/deploy.sh
+# Election-day profile: cache and Celery broker are deliberately separate.
+# Redis cache is disposable; broker must never lose queue keys because the cache
+# evicted them under load.
 # ==============================================================================
 
 x-logging: &default-logging
@@ -39,7 +38,6 @@ services:
           memory: 4G
     logging: *default-logging
     restart: unless-stopped
-    # Наружу не публикуется: база доступна только во внутренней Docker-сети
 
   pgbouncer:
     image: edoburu/pgbouncer:1.24.0
@@ -68,17 +66,47 @@ services:
           memory: 512M
     logging: *default-logging
     restart: unless-stopped
-    # Наружу не публикуется: доступен только во внутренней Docker-сети
 
+  # Disposable application cache. Principal warmup + public/application caches
+  # are allowed to evict each other; PostgreSQL remains the source of truth.
   redis:
     image: redis:7.4.2-alpine
     command: >-
       redis-server
       --requirepass ${REDIS_PASSWORD}
-      --maxmemory ${REDIS_MAXMEMORY:-256mb}
+      --maxmemory ${REDIS_MAXMEMORY:-2gb}
       --maxmemory-policy allkeys-lru
       --save ""
       --appendonly no
+      --tcp-backlog 4096
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+    logging: *default-logging
+    restart: unless-stopped
+
+  # Celery broker is isolated from the LRU cache. noeviction + AOF prevents an
+  # election-day cache burst from deleting queued maintenance/notification work.
+  redis-broker:
+    image: redis:7.4.2-alpine
+    command: >-
+      redis-server
+      --requirepass ${REDIS_PASSWORD}
+      --maxmemory ${REDIS_BROKER_MAXMEMORY:-512mb}
+      --maxmemory-policy noeviction
+      --appendonly yes
+      --appendfsync everysec
+      --save ""
+      --tcp-backlog 2048
+    volumes:
+      - redis_broker_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 5s
@@ -91,7 +119,6 @@ services:
           memory: 1G
     logging: *default-logging
     restart: unless-stopped
-    # Наружу не публикуется: доступен только во внутренней Docker-сети
 
   app:
     build:
@@ -101,15 +128,34 @@ services:
       - .env
     environment:
       DJANGO_ENV: production
-      # Подключение обязательно через PgBouncer с CONN_MAX_AGE=0 (ТЗ п.6, 11)
       DB_HOST: pgbouncer
       DB_PORT: "5432"
-      DB_CONN_MAX_AGE: "0"
+      DB_CONN_MAX_AGE: "${DB_CONN_MAX_AGE:-0}"
       DB_BEHIND_PGBOUNCER: "True"
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
-      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis-broker:6379/0
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis-broker:6379/1
       CELERY_TASK_ALWAYS_EAGER: "False"
+
+      # Measured production-oriented Gunicorn baseline for CCX33. Keep these
+      # environment-driven: exact optimum must still be selected by benchmark.
+      WEB_CONCURRENCY: "${WEB_CONCURRENCY:-16}"
+      GUNICORN_THREADS: "${GUNICORN_THREADS:-6}"
+      GUNICORN_BACKLOG: "${GUNICORN_BACKLOG:-8192}"
+      GUNICORN_KEEPALIVE: "${GUNICORN_KEEPALIVE:-15}"
+      GUNICORN_TIMEOUT: "${GUNICORN_TIMEOUT:-30}"
+      GUNICORN_GRACEFUL_TIMEOUT: "${GUNICORN_GRACEFUL_TIMEOUT:-30}"
+      GUNICORN_MAX_REQUESTS: "${GUNICORN_MAX_REQUESTS:-50000}"
+      GUNICORN_MAX_REQUESTS_JITTER: "${GUNICORN_MAX_REQUESTS_JITTER:-5000}"
+      GUNICORN_PRELOAD: "True"
+      GUNICORN_ACCESS_LOG: "off"
+      GUNICORN_LOG_LEVEL: "warning"
+
+      # Exact request counter stays enabled; expensive histogram/log operations
+      # are sampled during the burst. Override in .env for diagnostics.
+      HTTP_METRICS_DURATION_SAMPLE_RATE: "${HTTP_METRICS_DURATION_SAMPLE_RATE:-0.10}"
+      HTTP_ACCESS_LOG_SAMPLE_RATE: "${HTTP_ACCESS_LOG_SAMPLE_RATE:-0.01}"
+      HTTP_IN_PROGRESS_METRIC_ENABLED: "${HTTP_IN_PROGRESS_METRIC_ENABLED:-False}"
     volumes:
       - static:/app/staticfiles
       - media:/app/media
@@ -120,12 +166,18 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      redis-broker:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health/live || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 5
       start_period: 20s
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     deploy:
       resources:
         limits:
@@ -136,7 +188,6 @@ services:
     restart: unless-stopped
     stop_grace_period: 45s
 
-  # Очередь веб-нагрузки: короткие задачи, не конкурируют с импортом (ТЗ п.26)
   celery-default:
     build:
       context: .
@@ -151,15 +202,15 @@ services:
       DB_CONN_MAX_AGE: "0"
       DB_BEHIND_PGBOUNCER: "True"
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
-      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis-broker:6379/0
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis-broker:6379/1
       CELERY_TASK_ALWAYS_EAGER: "False"
     depends_on:
-      postgres:
-        condition: service_healthy
       pgbouncer:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      redis-broker:
         condition: service_healthy
     deploy:
       resources:
@@ -169,7 +220,8 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s
 
-  # Тяжёлые задачи отдельно (ТЗ п.26): импорт студентов и выгрузки не блокируют голосование
+  # Тяжёлые импорты/maintenance не должны конкурировать с vote path. В день
+  # выборов этот worker можно остановить после завершения всех импортов.
   celery-heavy:
     build:
       context: .
@@ -184,15 +236,15 @@ services:
       DB_CONN_MAX_AGE: "0"
       DB_BEHIND_PGBOUNCER: "True"
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
-      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis-broker:6379/0
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis-broker:6379/1
       CELERY_TASK_ALWAYS_EAGER: "False"
     depends_on:
-      postgres:
-        condition: service_healthy
       pgbouncer:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      redis-broker:
         condition: service_healthy
     deploy:
       resources:
@@ -205,7 +257,7 @@ services:
   nginx:
     image: nginx:1.27.4-alpine
     volumes:
-      # Подключение конфигурации: Mode A (http.conf) или Mode B (https.conf) (ТЗ п.14)
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./deploy/nginx/conf.d/${NGINX_CONF_FILE:-http.conf}:/etc/nginx/conf.d/default.conf:ro
       - ./deploy/nginx/vote_proxy_params.conf:/etc/nginx/vote_proxy_params.conf:ro
       - ./deploy/nginx/admin_ips.conf:/etc/nginx/admin_ips.conf:ro
@@ -213,6 +265,8 @@ services:
       - media:/srv/media:ro
       - ./deploy/certs:/etc/nginx/certs:ro
       - certbot_www:/var/www/certbot:ro
+    tmpfs:
+      - /var/cache/nginx:size=805306368,mode=0755
     ports:
       - "80:80"
       - "443:443"
@@ -225,15 +279,20 @@ services:
       timeout: 3s
       retries: 5
       start_period: 5s
+    ulimits:
+      nofile:
+        soft: 131072
+        hard: 131072
     deploy:
       resources:
         limits:
-          memory: 1G
+          memory: 2G
     logging: *default-logging
     restart: unless-stopped
 
 volumes:
   pgdata:
+  redis_broker_data:
   static:
   media:
   certbot_www:
